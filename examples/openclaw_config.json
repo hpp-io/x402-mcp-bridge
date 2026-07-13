@@ -1,0 +1,21 @@
+{
+  "_comment": "Snippet to merge into OpenClaw's config.json under mcp.servers. See https://docs.openclaw.ai/cli/mcp.",
+  "mcp": {
+    "servers": {
+      "hpp-x402": {
+        "command": "npx",
+        "args": ["-y", "@hpp-io/x402-mcp-bridge"],
+        "env": {
+          "DELEGATE_PRIVATE_KEY": "0xREPLACE_WITH_DELEGATE_EOA_KEY",
+          "SAFE_ADDRESS": "0xREPLACE_WITH_YOUR_SAFE",
+          "ALLOWANCE_MODULE_ADDRESS": "0x3CcE72483929e0517Dafc8fD192547B3B65f9b07",
+          "USDCE_ADDRESS": "0x401eCb1D350407f13ba348573E5630B83638E30D",
+          "RESOURCE_SERVER_URL": "https://YOUR_X402_MCP_SERVER/mcp/sse",
+          "HPP_RPC_URL": "https://sepolia.hpp.io",
+          "HPP_NETWORK": "eip155:181228",
+          "LOG_LEVEL": "info"
+        }
+      }
+    }
+  }
+}

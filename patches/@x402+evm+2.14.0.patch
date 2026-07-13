@@ -1,0 +1,36 @@
+diff --git a/node_modules/@x402/evm/dist/cjs/batch-settlement/client/index.js b/node_modules/@x402/evm/dist/cjs/batch-settlement/client/index.js
+index c9d4bb2..25db138 100644
+--- a/node_modules/@x402/evm/dist/cjs/batch-settlement/client/index.js
++++ b/node_modules/@x402/evm/dist/cjs/batch-settlement/client/index.js
+@@ -927,6 +927,7 @@ async function processSettleResponse(storage, settle) {
+   const channelState = readResponseChannelState(extra);
+   if (!channelState) return;
+   const channelId = channelState.channelId;
++  if (typeof channelId !== "string") return;
+   const key = channelId.toLowerCase();
+   const prev = await storage.get(key);
+   const next = { ...prev ?? {} };
+diff --git a/node_modules/@x402/evm/dist/cjs/index.js b/node_modules/@x402/evm/dist/cjs/index.js
+index 3a6e178..e79ab35 100644
+--- a/node_modules/@x402/evm/dist/cjs/index.js
++++ b/node_modules/@x402/evm/dist/cjs/index.js
+@@ -1745,6 +1745,7 @@ async function processSettleResponse(storage, settle) {
+   const channelState = readResponseChannelState(extra);
+   if (!channelState) return;
+   const channelId = channelState.channelId;
++  if (typeof channelId !== "string") return;
+   const key = channelId.toLowerCase();
+   const prev = await storage.get(key);
+   const next = { ...prev ?? {} };
+diff --git a/node_modules/@x402/evm/dist/esm/chunk-NKYVYGRA.mjs b/node_modules/@x402/evm/dist/esm/chunk-NKYVYGRA.mjs
+index b10f984..1fcc57e 100644
+--- a/node_modules/@x402/evm/dist/esm/chunk-NKYVYGRA.mjs
++++ b/node_modules/@x402/evm/dist/esm/chunk-NKYVYGRA.mjs
+@@ -220,6 +220,7 @@ async function processSettleResponse(storage, settle) {
+   const channelState = readResponseChannelState(extra);
+   if (!channelState) return;
+   const channelId = channelState.channelId;
++  if (typeof channelId !== "string") return;
+   const key = channelId.toLowerCase();
+   const prev = await storage.get(key);
+   const next = { ...prev ?? {} };
