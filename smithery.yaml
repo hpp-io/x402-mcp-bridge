@@ -1,0 +1,29 @@
+# Smithery listing config for @hpp-io/x402-mcp-bridge
+# Placed at the repo root so Smithery can scan + list this stdio server.
+# All env is optional — a bare launch boots zero-config on HPP Sepolia with an
+# auto-created keychain wallet.
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      hppNetwork:
+        type: string
+        description: "Target network: eip155:181228 (HPP Sepolia, default) or eip155:190415 (HPP Mainnet)."
+      delegatePrivateKey:
+        type: string
+        description: "Delegate EOA private key used to sign payments. Auto-created in the OS keychain if omitted."
+      resourceServerUrl:
+        type: string
+        description: "Optional upstream MCP server to proxy. Omit to expose only the local tools."
+    required: []
+  commandFunction: |
+    (config) => ({
+      command: "npx",
+      args: ["-y", "@hpp-io/x402-mcp-bridge"],
+      env: {
+        ...(config.hppNetwork ? { HPP_NETWORK: config.hppNetwork } : {}),
+        ...(config.delegatePrivateKey ? { DELEGATE_PRIVATE_KEY: config.delegatePrivateKey } : {}),
+        ...(config.resourceServerUrl ? { RESOURCE_SERVER_URL: config.resourceServerUrl } : {})
+      }
+    })
