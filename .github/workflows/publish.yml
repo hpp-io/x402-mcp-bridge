@@ -77,6 +77,29 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+      # ---- MCP Registry ---------------------------------------------
+      # Auto-register this version in the official MCP registry. Uses
+      # GitHub OIDC (no token) — the io.github.hpp-io/* namespace is
+      # authorized by this repo living under the hpp-io org. Requires the
+      # published npm package to carry a matching `mcpName` field.
+      - name: Install mcp-publisher
+        if: ${{ !inputs.dry_run }}
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v1.7.9/mcp-publisher_linux_amd64.tar.gz" \
+            | tar -xz mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/mcp-publisher
+
+      - name: Sync server.json version to package.json
+        if: ${{ !inputs.dry_run }}
+        run: |
+          node -e "const fs=require('fs');const v=require('./package.json').version;const s=JSON.parse(fs.readFileSync('server.json','utf8'));s.version=v;s.packages[0].version=v;fs.writeFileSync('server.json',JSON.stringify(s,null,2)+'\n');console.log('server.json synced to',v)"
+
+      - name: Publish to MCP Registry
+        if: ${{ !inputs.dry_run }}
+        run: |
+          mcp-publisher login github-oidc
+          mcp-publisher publish
+
       # ---- Summary ---------------------------------------------------
       - name: Summary
         if: always()
