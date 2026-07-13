@@ -1,5 +1,10 @@
 # @hpp-io/x402-mcp-bridge
 
+[![npm](https://img.shields.io/npm/v/@hpp-io/x402-mcp-bridge?logo=npm)](https://www.npmjs.com/package/@hpp-io/x402-mcp-bridge)
+[![MCP Registry](https://img.shields.io/badge/MCP_Registry-listed-1f6feb)](https://registry.modelcontextprotocol.io/?q=x402-mcp-bridge)
+[![License](https://img.shields.io/badge/license-Apache--2.0-green)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-3c873a?logo=node.js)](https://nodejs.org)
+
 > The agent payment rail for HPP. A stdio MCP bridge + the `hpp-x402` CLI that let
 > Claude Desktop / Claude Code / Cursor / Windsurf / OpenClaw make autonomous
 > **HPP USDC.e** payments over [x402](https://x402.org) — discover paid services,
