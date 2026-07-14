@@ -44,6 +44,7 @@ import {
   sellerSettle,
   type SellerDeps,
 } from "./sellerTools.js";
+import { SELLER_RECEIPT_TOOL, sellerReceipt } from "./sellerReceipt.js";
 import { walletSpendStatus, setWalletLimits } from "./spendGuard.js";
 import type { RawEoaSigner } from "./signers/raw-eoa.js";
 import type { Funds } from "./funds.js";
@@ -308,6 +309,8 @@ export async function startBridgeServer(opts: BridgeServerOptions): Promise<void
             return await sellerVerify(s, a);
           case SELLER_SETTLE_TOOL.name:
             return await sellerSettle(s, a);
+          case SELLER_RECEIPT_TOOL.name:
+            return sellerReceipt(a);
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

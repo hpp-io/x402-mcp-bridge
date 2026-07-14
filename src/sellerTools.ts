@@ -2,22 +2,24 @@
  * Seller building-block tools (A2 Phase 1) — let an agent that already receives
  * requests (its own HTTP/A2A server) charge for them over x402.
  *
- * Five stateless tools mirroring Polygon's seller set, but covering all three
+ * Stateless tools mirroring Polygon's seller set, but covering all three
  * HPP schemes (exact / upto / batch-settlement), not just exact:
  *   - seller_create_requirements  build a PaymentRequirements (local)
  *   - seller_generate_402         build the HTTP 402 body from accepts[] (local)
  *   - seller_decode_payment       decode the X-PAYMENT header + payer (local)
  *   - seller_verify               facilitator /verify   (does the buyer's sig hold?)
  *   - seller_settle               facilitator /settle   (move the funds on-chain)
+ *   - seller_receipt              bind the settled tx to the delivered result (local)
  *
  * verify/settle are thin wrappers over the same HTTPFacilitatorClient the
  * resource server uses; the tools never hold funds or keys. The agent's own
- * server orchestrates: 402 → decode → verify → do the work → settle.
+ * server orchestrates: 402 → decode → verify → do the work → settle → receipt.
  */
 import { HTTPFacilitatorClient } from "@x402/core/server";
 import type { PaymentRequirements, PaymentPayload, Network } from "@x402/core/types";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
+import { SELLER_RECEIPT_TOOL } from "./sellerReceipt.js";
 import { log } from "./log.js";
 
 export interface SellerDeps {
@@ -157,6 +159,7 @@ export const SELLER_TOOLS = [
   SELLER_DECODE_PAYMENT_TOOL,
   SELLER_VERIFY_TOOL,
   SELLER_SETTLE_TOOL,
+  SELLER_RECEIPT_TOOL,
 ] as const;
 
 // ── handlers ──────────────────────────────────────────────────────────────
