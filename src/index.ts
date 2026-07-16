@@ -26,7 +26,7 @@ import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import type { Network } from "@x402/core/types";
 
 const PKG_NAME = "@hpp-io/x402-mcp-bridge";
-const PKG_VERSION = "0.1.8"; // mirrors package.json — bump together
+const PKG_VERSION = "0.1.9"; // mirrors package.json — bump together
 const DEFAULT_ACCOUNT = "delegate-default";
 
 /**
