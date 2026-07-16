@@ -1,6 +1,6 @@
 {
   "name": "@hpp-io/x402-mcp-bridge",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "MCP stdio bridge that lets Claude Desktop / OpenClaw / other MCP hosts make x402 payments on HPP — autoTopup from a Safe via AllowanceModule, signs EIP-3009 with a delegate EOA.",
   "license": "Apache-2.0",
   "keywords": [
@@ -23,9 +23,16 @@
   "mcpName": "io.github.hpp-io/x402-mcp-bridge",
   "type": "module",
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js",
-    "./receipt": "./dist/sellerReceipt.js"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./receipt": {
+      "types": "./dist/sellerReceipt.d.ts",
+      "default": "./dist/sellerReceipt.js"
+    }
   },
   "bin": {
     "x402-mcp-bridge": "bin/x402-mcp-bridge.js",
@@ -33,6 +40,7 @@
   },
   "files": [
     "dist/**/*.js",
+    "dist/**/*.d.ts",
     "bin",
     "docs/policy.md",
     "README.md",
