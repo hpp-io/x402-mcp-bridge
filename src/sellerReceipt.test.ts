@@ -35,6 +35,15 @@ describe("canonicalize", () => {
   it("preserves array order (arrays are not sorted)", () => {
     expect(canonicalize([1, 2, 3])).not.toBe(canonicalize([3, 2, 1]));
   });
+
+  it("throws a controlled error on pathologically deep input (DoS guard)", () => {
+    let deep: any = {};
+    let cur = deep;
+    for (let i = 0; i < 400; i++) { cur.a = {}; cur = cur.a; }
+    expect(() => canonicalize(deep)).toThrow(/max nesting depth/);
+    // reached via the builder too
+    expect(() => buildExecutionReceipt({ ...base, capability: { skillId: "x", request: deep, result: null } })).toThrow(/max nesting depth/);
+  });
 });
 
 describe("buildExecutionReceipt", () => {

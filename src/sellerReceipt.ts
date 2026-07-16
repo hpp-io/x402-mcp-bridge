@@ -68,14 +68,21 @@ export interface ExecutionReceipt {
  * Arrays keep their order; primitives serialize as JSON. `undefined` object
  * properties are dropped, mirroring JSON.stringify.
  */
-export function canonicalize(value: unknown): string {
+/** Max nesting depth — bounds recursion so pathological (deeply-nested or
+ *  cyclic) input throws a controlled error instead of overflowing the stack. */
+export const CANONICALIZE_MAX_DEPTH = 256;
+
+export function canonicalize(value: unknown, depth = 0): string {
+  if (depth > CANONICALIZE_MAX_DEPTH) {
+    throw new Error(`canonicalize: max nesting depth (${CANONICALIZE_MAX_DEPTH}) exceeded`);
+  }
   if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
-  if (Array.isArray(value)) return `[${value.map((v) => canonicalize(v ?? null)).join(",")}]`;
+  if (Array.isArray(value)) return `[${value.map((v) => canonicalize(v ?? null, depth + 1)).join(",")}]`;
   const obj = value as Record<string, unknown>;
   const parts: string[] = [];
   for (const key of Object.keys(obj).sort()) {
     if (obj[key] === undefined) continue;
-    parts.push(`${JSON.stringify(key)}:${canonicalize(obj[key])}`);
+    parts.push(`${JSON.stringify(key)}:${canonicalize(obj[key], depth + 1)}`);
   }
   return `{${parts.join(",")}}`;
 }
