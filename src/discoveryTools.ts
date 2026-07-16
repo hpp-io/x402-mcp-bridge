@@ -16,6 +16,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { DiscoveryClient, DiscoverQuery } from "./discovery.js";
 import { x402HttpCall, type HttpX402Deps } from "./httpX402.js";
+import { payA2aAgent } from "./a2a.js";
 
 export const HPP_DISCOVER_TOOL = {
   name: "hpp_discover",
@@ -126,13 +127,25 @@ export async function hppCall(
     return errorResult(`discovery lookup failed: ${(err as Error).message}`);
   }
 
+  // A2A-typed: drive the gate-then-pay A2A flow internally (same wallet +
+  // spend cap as the HTTP path), so discover → call is one tool for A2A too.
+  // The seller returns its result plus an execution receipt in
+  // x402.payment.receipts, which payA2aAgent surfaces.
+  if (detail.type === "a2a") {
+    if (!detail.skillId) {
+      return errorResult(`a2a resource "${args.resourceId}" has no skillId in discovery — cannot invoke`);
+    }
+    const message = typeof args.body === "string" ? args.body : JSON.stringify(args.body ?? {});
+    return payA2aAgent(
+      { signer: deps.signer, network: deps.network, funds: deps.funds },
+      { agentUrl: detail.resourceUrl, skill: detail.skillId, message },
+    );
+  }
+
   if (detail.type !== "http") {
     return errorResult(
       `resource "${args.resourceId}" is type "${detail.type}" — connect to it ` +
-        `directly at ${detail.resourceUrl}` +
-        (detail.type === "a2a"
-          ? ` (use pay_a2a_agent with its skill id).`
-          : ` (MCP transport).`),
+        `directly at ${detail.resourceUrl} (MCP transport).`,
     );
   }
 
