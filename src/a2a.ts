@@ -32,6 +32,13 @@ export interface A2aPayerDeps {
   /** Optional: ensure the delegate holds enough USDC.e before paying. */
   funds?: Funds;
   /**
+   * Optional atomic-units price ceiling. When set (e.g. the discovery-listed
+   * price on the hpp_call path), refuse to sign if the agent's gate demands
+   * MORE than this — stops a bait-and-switch where a service advertises a
+   * cheap price but gates a large `accept.amount` at call time.
+   */
+  maxAmountAtomic?: string;
+  /**
    * Per-request timeout for the gate + paid `message/send` JSON-RPC calls.
    * Defaults to {@link DEFAULT_A2A_RPC_TIMEOUT_MS} (60s). Override via env
    * `HPP_X402_A2A_RPC_TIMEOUT_MS` at startup.
@@ -96,6 +103,7 @@ export const PAY_A2A_TOOL = {
 const REQUIRED_KEY = "x402.payment.required";
 const PAYLOAD_KEY = "x402.payment.payload";
 const STATUS_KEY = "x402.payment.status";
+const RECEIPTS_KEY = "x402.payment.receipts";
 
 /**
  * Per-request timeout for A2A JSON-RPC calls. Without this the bridge's
@@ -212,6 +220,23 @@ export async function payA2aAgent(
 
   const requiredAtomic = BigInt((accept as { amount?: string }).amount ?? "0");
 
+  // 2a0. Price ceiling: on the discovery path the caller passes the listed
+  //      price; refuse if the agent's gate demands more than advertised.
+  if (deps.maxAmountAtomic !== undefined) {
+    let ceiling: bigint;
+    try {
+      ceiling = BigInt(deps.maxAmountAtomic);
+    } catch {
+      ceiling = 0n;
+    }
+    if (requiredAtomic > ceiling) {
+      return errorResult(
+        `A2A agent demands ${requiredAtomic} atomic USDC.e but the advertised/allowed ` +
+          `price is ${ceiling} — refusing (possible price bait-and-switch).`,
+      );
+    }
+  }
+
   // 2a. Wallet-wide guard (per-call + daily ledger) — the same brake as the
   //     HTTP/MCP path, so A2A payments are capped too (previously uncapped).
   const walletDeny = checkWalletSpend(requiredAtomic);
@@ -267,8 +292,20 @@ export async function payA2aAgent(
 
   // Record the successful spend against the wallet-wide daily ledger.
   recordWalletSpend(requiredAtomic);
+  // Surface the a2a-x402 receipts (settle response + execution receipt, when
+  // the seller emits one) so the caller can verify what the payment bought.
+  const receipts = task?.metadata?.[RECEIPTS_KEY];
   return {
-    content: [{ type: "text", text: JSON.stringify({ payment: payStatus, ...extractResult(task) }) }],
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          payment: payStatus,
+          ...(receipts ? { receipts } : {}),
+          ...extractResult(task),
+        }),
+      },
+    ],
   };
 }
 

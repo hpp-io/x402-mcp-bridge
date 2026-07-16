@@ -14,6 +14,13 @@
  *     [--price 10000] [--network eip155:181228] [--asset 0x...]
  *     [--facilitator-url https://facilitator-sepolia.hpp.io]
  *     [--handler https://my-agent/handle] [--description "..."]
+ *
+ * A2A mode (--a2a): expose the same capability as a paid Agent2Agent service
+ * over the a2a-x402 protocol instead of plain HTTP. Payment travels in A2A
+ * message metadata; the seller hand-rolls gate → verify → work → settle and
+ * emits an execution receipt in `x402.payment.receipts`. exact scheme only.
+ *   hpp-x402 serve --a2a --pay-to 0x... --skill summarize
+ *     [--handler https://my-agent/handle] [--url https://seller.example.com]
  */
 import express from "express";
 import { paymentMiddleware, x402ResourceServer } from "@x402/express";
@@ -23,6 +30,8 @@ import { HTTPFacilitatorClient } from "@x402/core/server";
 import { declareDiscoveryExtension } from "@x402/extensions/bazaar";
 import { declareEip2612GasSponsoringExtension } from "@x402/extensions";
 import type { Network } from "@x402/core/types";
+
+import { mountA2aSeller } from "../a2aServe.js";
 
 const DEFAULT_USDCE = "0x401eCb1D350407f13ba348573E5630B83638E30D";
 const DEFAULT_FACILITATOR = "https://facilitator-sepolia.hpp.io";
@@ -119,6 +128,76 @@ export async function run(): Promise<void> {
   // upto needs the EIP-2612 gas-sponsoring extension so buyers sign the Permit2
   // approval gaslessly; exact ignores it.
   const gasSponsoring = scheme === "upto" ? declareEip2612GasSponsoringExtension() : {};
+
+  // ── A2A mode (--a2a): expose the capability as a paid Agent2Agent service ──
+  // Payment travels in A2A message metadata (not the X-PAYMENT header), so we
+  // hand-roll gate → verify → work → settle → receipt instead of the express
+  // paymentMiddleware. Emits an execution receipt in x402.payment.receipts.
+  if (a.a2a === true) {
+    if (scheme !== "exact") throw new Error("--a2a supports --scheme exact only");
+    const skill = (a.skill as string) ?? "service";
+    const publicBaseUrl = (publicHost ? `${publicProto}://${publicHost}` : `http://localhost:${port}`);
+
+    // Build version-correct exact requirements, then stamp the A2A discovery
+    // marker: `resource` = the per-skill A2A identity, `extensions.a2a` =
+    // {agentCard, skillId} so the discovery indexer lists this as type=a2a
+    // (the Bazaar SDK can't model A2A on its own — mirrors the PoC executor).
+    await resourceServer.initialize();
+    const baseAccepts = (await resourceServer.buildPaymentRequirements({
+      scheme: "exact",
+      network,
+      payTo,
+      price: { amount: price, asset, extra: { name: domainName, version: domainVersion } },
+      maxTimeoutSeconds: 600,
+    })) as Record<string, unknown>[];
+    const accepts = baseAccepts.map((req) => ({
+      ...req,
+      resource: `${publicBaseUrl}/a2a/${skill}`,
+      extensions: {
+        ...((req as { extensions?: Record<string, unknown> }).extensions ?? {}),
+        ...(discoverable ? discovery : {}),
+        ...(discoverable
+          ? { a2a: { agentCard: `${publicBaseUrl}/.well-known/agent-card.json`, skillId: skill } }
+          : {}),
+      },
+    }));
+
+    const app = express();
+    app.use(express.json());
+    mountA2aSeller(app, {
+      requirements: accepts[0]!,
+      accepts,
+      facilitator,
+      skill,
+      description,
+      publicBaseUrl,
+      priceAtomic: price,
+      network,
+      handlerUrl,
+      agentName: a.name as string | undefined,
+    });
+    app.get("/healthz", (_req, res) => {
+      res.json({ ok: true });
+    });
+
+    const server = app.listen(port, () => {
+      process.stderr.write(
+        `hpp-x402 serve --a2a: POST /a2a @ :${port}  skill=${skill} price=${price} payTo=${payTo}\n` +
+          `  AgentCard: ${publicBaseUrl}/.well-known/agent-card.json\n` +
+          `  network=${network} facilitator=${facilitatorUrl} handler=${handlerUrl ?? "echo"}\n` +
+          `  discovery: ${discoverable ? `${publicBaseUrl}/a2a/${skill} (type=a2a)` : "(--private: not advertised)"}\n`,
+      );
+    });
+    server.on("error", (err: NodeJS.ErrnoException) => {
+      process.stderr.write(
+        err.code === "EADDRINUSE"
+          ? `hpp-x402 serve error: port ${port} is already in use. Pick another with --port.\n`
+          : `hpp-x402 serve error: ${err.message}\n`,
+      );
+      process.exit(1);
+    });
+    return;
+  }
 
   const routes = {
     [`POST ${path}`]: {
