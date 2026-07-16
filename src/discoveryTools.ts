@@ -137,7 +137,14 @@ export async function hppCall(
     }
     const message = typeof args.body === "string" ? args.body : JSON.stringify(args.body ?? {});
     return payA2aAgent(
-      { signer: deps.signer, network: deps.network, funds: deps.funds },
+      {
+        signer: deps.signer,
+        network: deps.network,
+        funds: deps.funds,
+        // Curated price is the ceiling: refuse if the agent's gate demands more
+        // than discovery advertised (defends the "trusted price" of hpp_call).
+        maxAmountAtomic: detail.priceAtomic,
+      },
       { agentUrl: detail.resourceUrl, skill: detail.skillId, message },
     );
   }

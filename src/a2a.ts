@@ -32,6 +32,13 @@ export interface A2aPayerDeps {
   /** Optional: ensure the delegate holds enough USDC.e before paying. */
   funds?: Funds;
   /**
+   * Optional atomic-units price ceiling. When set (e.g. the discovery-listed
+   * price on the hpp_call path), refuse to sign if the agent's gate demands
+   * MORE than this — stops a bait-and-switch where a service advertises a
+   * cheap price but gates a large `accept.amount` at call time.
+   */
+  maxAmountAtomic?: string;
+  /**
    * Per-request timeout for the gate + paid `message/send` JSON-RPC calls.
    * Defaults to {@link DEFAULT_A2A_RPC_TIMEOUT_MS} (60s). Override via env
    * `HPP_X402_A2A_RPC_TIMEOUT_MS` at startup.
@@ -212,6 +219,23 @@ export async function payA2aAgent(
   const narrowedRequired = { ...required, accepts: [accept] };
 
   const requiredAtomic = BigInt((accept as { amount?: string }).amount ?? "0");
+
+  // 2a0. Price ceiling: on the discovery path the caller passes the listed
+  //      price; refuse if the agent's gate demands more than advertised.
+  if (deps.maxAmountAtomic !== undefined) {
+    let ceiling: bigint;
+    try {
+      ceiling = BigInt(deps.maxAmountAtomic);
+    } catch {
+      ceiling = 0n;
+    }
+    if (requiredAtomic > ceiling) {
+      return errorResult(
+        `A2A agent demands ${requiredAtomic} atomic USDC.e but the advertised/allowed ` +
+          `price is ${ceiling} — refusing (possible price bait-and-switch).`,
+      );
+    }
+  }
 
   // 2a. Wallet-wide guard (per-call + daily ledger) — the same brake as the
   //     HTTP/MCP path, so A2A payments are capped too (previously uncapped).

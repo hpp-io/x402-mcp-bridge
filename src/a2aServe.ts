@@ -21,7 +21,8 @@
 import type { Express, Request, Response } from "express";
 import type { Network } from "@x402/core/types";
 
-import { buildExecutionReceipt } from "./sellerReceipt.js";
+import { buildExecutionReceipt, canonicalize } from "./sellerReceipt.js";
+import { log } from "./log.js";
 
 // a2a-x402 extension metadata keys (mirror src/a2a.ts + the a2a-x402 spec).
 const REQUIRED_KEY = "x402.payment.required";
@@ -147,9 +148,13 @@ function inputRequiredTask(accepts: Record<string, unknown>[]): Record<string, u
   };
 }
 
-function failedTask(text: string, reason: string): Record<string, unknown> {
+function failedTask(
+  text: string,
+  reason: string,
+  status: string = PAYMENT_STATUS.REJECTED,
+): Record<string, unknown> {
   const taskId = newId("task");
-  const meta = { [STATUS_KEY]: PAYMENT_STATUS.REJECTED, [ERROR_KEY]: reason };
+  const meta = { [STATUS_KEY]: status, [ERROR_KEY]: reason };
   return {
     kind: "task",
     id: taskId,
@@ -163,11 +168,10 @@ function completedTask(
   result: unknown,
   settleReceipt: unknown,
   executionReceipt: unknown,
-  settled: boolean,
 ): Record<string, unknown> {
   const taskId = newId("task");
   const meta = {
-    [STATUS_KEY]: settled ? PAYMENT_STATUS.COMPLETED : PAYMENT_STATUS.FAILED,
+    [STATUS_KEY]: PAYMENT_STATUS.COMPLETED,
     [RECEIPTS_KEY]: [settleReceipt, executionReceipt],
   };
   return {
@@ -216,18 +220,35 @@ export async function handleMessageSend(
     v.payer ??
     ((payload as { payload?: { authorization?: { from?: string } } }).payload?.authorization?.from);
 
-  // Do the work (payment verified, NOT yet settled).
+  // Reject pathological (deeply-nested) input BEFORE doing work or settling,
+  // so an attacker can't force the receipt hashing to blow the stack after we
+  // already spent handler compute + a settle. canonicalize is depth-bounded.
   const args = requestArgsOf(message);
+  try {
+    canonicalize(args);
+  } catch {
+    return failedTask("Invalid request payload.", "invalid_input");
+  }
+
+  // Do the work (payment verified, NOT yet settled).
   const result = await doWork(opts, args);
 
-  // Settle AFTER success (serve-then-settle). Non-fatal on failure.
+  // Settle AFTER success (serve-then-settle).
   let settleReceipt: { success: boolean; transaction?: string; errorReason?: string };
   try {
     settleReceipt = await opts.facilitator.settle(payload, requirements);
   } catch (err) {
-    settleReceipt = { success: false, errorReason: err instanceof Error ? err.message : "settle error" };
+    log.error("a2a.settle.error", { err: err instanceof Error ? err.message : String(err) });
+    settleReceipt = { success: false };
   }
-  const settled = settleReceipt.success === true;
+
+  // Fund safety: deliver the paid result ONLY if settlement actually
+  // succeeded. Returning the artifact on a failed settle = free work
+  // (verify passing does not guarantee settle). Withhold + fail instead;
+  // don't mint a receipt binding a non-existent tx.
+  if (settleReceipt.success !== true) {
+    return failedTask("Payment settlement failed.", "settle_failed", PAYMENT_STATUS.FAILED);
+  }
 
   const executionReceipt = buildExecutionReceipt({
     requirements: requirements as never,
@@ -238,7 +259,7 @@ export async function handleMessageSend(
     settledAt: new Date().toISOString(),
   });
 
-  return completedTask(opts.skill, result, settleReceipt, executionReceipt, settled);
+  return completedTask(opts.skill, result, settleReceipt, executionReceipt);
 }
 
 /** Mount `/a2a` (JSON-RPC) + AgentCard routes onto an Express app. */
@@ -258,7 +279,10 @@ export function mountA2aSeller(app: Express, opts: A2aServeOptions): void {
       const result = await handleMessageSend(opts, params?.message);
       res.json({ jsonrpc: "2.0", id: id ?? null, result });
     } catch (err) {
-      res.json({ jsonrpc: "2.0", id: id ?? null, error: { code: -32000, message: err instanceof Error ? err.message : String(err) } });
+      // Log the detail server-side; return a generic message so operator
+      // internals (handler / facilitator URLs, stack detail) don't leak.
+      log.error("a2a.request.error", { err: err instanceof Error ? err.message : String(err) });
+      res.json({ jsonrpc: "2.0", id: id ?? null, error: { code: -32000, message: "internal error" } });
     }
   });
 }

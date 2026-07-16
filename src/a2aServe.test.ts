@@ -106,3 +106,34 @@ describe("handleMessageSend — paid", () => {
     expect(settleCalls).toBe(0);
   });
 });
+
+describe("handleMessageSend — fund safety & DoS (security review fixes)", () => {
+  it("withholds the result artifact when settle FAILS (no free work)", async () => {
+    const failingSettle = {
+      ...opts,
+      facilitator: { verify: async () => ({ isValid: true, payer: "0xBuyer" }), settle: async () => ({ success: false, errorReason: "nonce_used" }) },
+    };
+    const task = await handleMessageSend(failingSettle, msg(JSON.stringify({ prompt: "x" }), { "x402.payment.payload": PAYLOAD }));
+    expect(task.status).toMatchObject({ state: "failed" });
+    expect((task.metadata as any)["x402.payment.status"]).toBe("payment-failed");
+    expect(task.artifacts).toBeUndefined(); // result NOT delivered
+    expect((task.metadata as any)["x402.payment.receipts"]).toBeUndefined();
+  });
+
+  it("rejects deeply-nested request BEFORE doing work or settling (DoS guard)", async () => {
+    let verified = 0, settled = 0;
+    const tracking = {
+      ...opts,
+      facilitator: { verify: async () => { verified++; return { isValid: true, payer: "0xBuyer" }; }, settle: async () => { settled++; return { success: true, transaction: MOCK_TX }; } },
+    };
+    // 400-deep nested object, well past CANONICALIZE_MAX_DEPTH (256).
+    let deep: any = {};
+    let cur = deep;
+    for (let i = 0; i < 400; i++) { cur.a = {}; cur = cur.a; }
+    const task = await handleMessageSend(tracking, { kind: "message", role: "user", parts: [{ kind: "text", text: "x" }], metadata: { input: deep, "x402.payment.payload": PAYLOAD } });
+    expect(task.status).toMatchObject({ state: "failed" });
+    expect((task.metadata as any)["x402.payment.error"]).toBe("invalid_input");
+    expect(verified).toBe(1); // verify ran
+    expect(settled).toBe(0);  // but NOT settled (rejected before work/settle)
+  });
+});
