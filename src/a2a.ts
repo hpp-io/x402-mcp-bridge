@@ -96,6 +96,7 @@ export const PAY_A2A_TOOL = {
 const REQUIRED_KEY = "x402.payment.required";
 const PAYLOAD_KEY = "x402.payment.payload";
 const STATUS_KEY = "x402.payment.status";
+const RECEIPTS_KEY = "x402.payment.receipts";
 
 /**
  * Per-request timeout for A2A JSON-RPC calls. Without this the bridge's
@@ -267,8 +268,20 @@ export async function payA2aAgent(
 
   // Record the successful spend against the wallet-wide daily ledger.
   recordWalletSpend(requiredAtomic);
+  // Surface the a2a-x402 receipts (settle response + execution receipt, when
+  // the seller emits one) so the caller can verify what the payment bought.
+  const receipts = task?.metadata?.[RECEIPTS_KEY];
   return {
-    content: [{ type: "text", text: JSON.stringify({ payment: payStatus, ...extractResult(task) }) }],
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          payment: payStatus,
+          ...(receipts ? { receipts } : {}),
+          ...extractResult(task),
+        }),
+      },
+    ],
   };
 }
 
