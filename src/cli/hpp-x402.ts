@@ -7,6 +7,8 @@
  * The existing bins (hpp-x402-quickstart / -keychain / ...) remain during the
  * transition; this reuses the same lib functions so behavior matches.
  */
+import { createRequire } from "node:module";
+
 import { Command } from "commander";
 import { privateKeyToAccount, generatePrivateKey } from "viem/accounts";
 import {
@@ -54,8 +56,8 @@ const NETWORKS: Record<
     chainId: 190415,
   },
 };
+const PKG_VERSION = (createRequire(import.meta.url)("../../package.json") as { version: string }).version;
 const DEFAULT_NETWORK = "eip155:181228";
-const DEFAULT_RESOURCE_SERVER = "http://localhost:4021/mcp/sse";
 
 const ERC20_BALANCE_ABI = [
   {
@@ -93,12 +95,13 @@ async function usdcBalance(address: Address, netId: string): Promise<string> {
   })) as bigint;
   return formatUnits(bal, 6);
 }
-function lightEnv(account: string, netId: string, resourceServerUrl: string): InstallEnv {
+function lightEnv(account: string, netId: string, resourceServerUrl?: string): InstallEnv {
   const n = net(netId);
   return {
     DELEGATE_PRIVATE_KEY: buildKeychainURI(account),
     USDCE_ADDRESS: n.usdc,
-    RESOURCE_SERVER_URL: resourceServerUrl,
+    // Only when explicitly requested — see InstallEnv.RESOURCE_SERVER_URL.
+    ...(resourceServerUrl ? { RESOURCE_SERVER_URL: resourceServerUrl } : {}),
     HPP_RPC_URL: n.rpc,
     HPP_NETWORK: netId,
     LOG_LEVEL: "info",
@@ -143,7 +146,8 @@ const program = new Command();
 program
   .name("hpp-x402")
   .description("HPP x402 agent wallet + payment CLI")
-  .version("0.1.5");
+  // From package.json: the hand-maintained literal here had drifted to 0.1.5.
+  .version(PKG_VERSION);
 
 // ── setup (one-command onboarding) ─────────────────────────────────────
 program
@@ -151,7 +155,7 @@ program
   .description("one-command light onboarding: wallet + fund instructions (+ optional --install)")
   .option(...acct)
   .option("-n, --network <id>", "network", DEFAULT_NETWORK)
-  .option("--resource-server-url <url>", "x402 MCP resource server", DEFAULT_RESOURCE_SERVER)
+  .option("--resource-server-url <url>", "optional upstream x402 MCP resource server")
   .option("--delegate-pk <key>", "import an existing 0x key instead of generating one")
   .option("--print-key", "emit the raw key instead of a keychain URI (dev only)")
   .option("--install <host>", `also register into an MCP host (${Object.keys(HOSTS).join("|")})`)
@@ -159,7 +163,7 @@ program
     (o: {
       account: string;
       network: string;
-      resourceServerUrl: string;
+      resourceServerUrl?: string;
       delegatePk?: string;
       printKey?: boolean;
       install?: string;
@@ -188,7 +192,8 @@ program
       const env: InstallEnv = {
         DELEGATE_PRIVATE_KEY: ref,
         USDCE_ADDRESS: n.usdc,
-        RESOURCE_SERVER_URL: o.resourceServerUrl,
+        // Absent unless asked for — see InstallEnv.RESOURCE_SERVER_URL.
+        ...(o.resourceServerUrl ? { RESOURCE_SERVER_URL: o.resourceServerUrl } : {}),
         HPP_RPC_URL: n.rpc,
         HPP_NETWORK: o.network,
         LOG_LEVEL: "info",
@@ -264,8 +269,8 @@ program
   .description(`register the bridge into an MCP host (${Object.keys(HOSTS).join("|")})`)
   .option(...acct)
   .option("-n, --network <id>", "network", DEFAULT_NETWORK)
-  .option("--resource-server-url <url>", "x402 MCP resource server", DEFAULT_RESOURCE_SERVER)
-  .action((host: string, o: { account: string; network: string; resourceServerUrl: string }) => {
+  .option("--resource-server-url <url>", "optional upstream x402 MCP resource server")
+  .action((host: string, o: { account: string; network: string; resourceServerUrl?: string }) => {
     const fn = HOSTS[host];
     if (!fn) throw new Error(`unknown host "${host}" (${Object.keys(HOSTS).join("|")})`);
     const r = fn(lightEnv(o.account, o.network, o.resourceServerUrl));
@@ -460,8 +465,8 @@ program
   .description("config · wallet balance · server reachability")
   .option(...acct)
   .option("-n, --network <id>", "network", DEFAULT_NETWORK)
-  .option("--resource-server-url <url>", "x402 MCP resource server", DEFAULT_RESOURCE_SERVER)
-  .action(async (o: { account: string; network: string; resourceServerUrl: string }) => {
+  .option("--resource-server-url <url>", "optional upstream x402 MCP resource server")
+  .action(async (o: { account: string; network: string; resourceServerUrl?: string }) => {
     const n = net(o.network);
     console.log(`network : ${n.name} (${o.network})`);
     let addr: Address;
@@ -477,6 +482,9 @@ program
     } catch {
       console.log(`balance : (read failed)`);
     }
+    // No upstream configured is the normal case for a buyer, so don't print a
+    // scary "unreachable" line about a server nobody asked for.
+    if (!o.resourceServerUrl) return;
     let srv = "unreachable";
     try {
       const origin = new URL(o.resourceServerUrl).origin;

@@ -23,7 +23,11 @@ export interface InstallEnv {
   SAFE_ADDRESS?: string;
   ALLOWANCE_MODULE_ADDRESS?: string;
   USDCE_ADDRESS: string;
-  RESOURCE_SERVER_URL: string;
+  // Optional, and deliberately absent unless the operator asks for it. Writing a
+  // default here put `http://localhost:4021/mcp/sse` into every fresh install,
+  // which for anyone not running that server is an upstream that will never
+  // answer — buyers don't need one at all (wallet + discovery are local tools).
+  RESOURCE_SERVER_URL?: string;
   HPP_RPC_URL: string;
   HPP_NETWORK: string;
   LOG_LEVEL?: string;
