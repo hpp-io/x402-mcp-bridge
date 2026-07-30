@@ -247,7 +247,15 @@ export async function connectUpstream(opts: UpstreamOptions): Promise<UpstreamCl
   });
 
   const transport = new SSEClientTransport(new URL(opts.url));
-  await base.connect(transport);
+  try {
+    await base.connect(transport);
+  } catch (err) {
+    // Release the half-open transport before rethrowing. A caller that degrades
+    // to local-tools mode on failure would otherwise inherit a live retry timer,
+    // and the process would never exit when the host closes stdin.
+    await base.close().catch(() => {});
+    throw err;
+  }
   log.info("upstream.connected", { url: opts.url });
 
   return {

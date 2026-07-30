@@ -22,11 +22,20 @@ import {
   buildKeychainURI,
 } from "./keychain.js";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { createRequire } from "node:module";
 
 import type { Network } from "@x402/core/types";
 
-const PKG_NAME = "@hpp-io/x402-mcp-bridge";
-const PKG_VERSION = "0.1.9"; // mirrors package.json — bump together
+// Read from package.json rather than a literal kept "in sync by hand" — that
+// drifted the moment a release bumped package.json alone, and 0.1.10 shipped
+// reporting itself as 0.1.9 to logs and to upstream MCP servers (client info).
+// dist/index.js and src/index.ts are both one level below the package root.
+const pkg = createRequire(import.meta.url)("../package.json") as {
+  name: string;
+  version: string;
+};
+const PKG_NAME = pkg.name;
+const PKG_VERSION = pkg.version;
 const DEFAULT_ACCOUNT = "delegate-default";
 
 /**
@@ -114,15 +123,29 @@ export async function runBridge(env: NodeJS.ProcessEnv = process.env): Promise<v
   // top-up / A2A) and skip the upstream connection.
   let upstream: Awaited<ReturnType<typeof connectUpstream>> | undefined;
   if (cfg.RESOURCE_SERVER_URL) {
-    upstream = await connectUpstream({
-      url: cfg.RESOURCE_SERVER_URL,
-      network: cfg.HPP_NETWORK as Network,
-      rpcUrl: cfg.HPP_RPC_URL,
-      signer,
-      funds,
-      bridgeName: PKG_NAME,
-      bridgeVersion: PKG_VERSION,
-    });
+    try {
+      upstream = await connectUpstream({
+        url: cfg.RESOURCE_SERVER_URL,
+        network: cfg.HPP_NETWORK as Network,
+        rpcUrl: cfg.HPP_RPC_URL,
+        signer,
+        funds,
+        bridgeName: PKG_NAME,
+        bridgeVersion: PKG_VERSION,
+      });
+    } catch (err) {
+      // Degrade, don't die. An unreachable upstream used to kill the whole
+      // bridge: a host pointed at a resource server that happened to be down
+      // lost its wallet and discovery tools too, which have nothing to do with
+      // that server. Logged at error level so a genuinely-wanted upstream is
+      // still obvious in the host's stderr.
+      log.error("upstream.unavailable", {
+        url: cfg.RESOURCE_SERVER_URL,
+        err: (err as Error).message,
+        reason: "continuing with local tools only (wallet, discovery, x402_http_call, pay_a2a_agent)",
+      });
+      upstream = undefined;
+    }
   } else {
     log.info("upstream.skipped", {
       reason: "RESOURCE_SERVER_URL unset — local tools only (x402_http_call, pay_a2a_agent)",
