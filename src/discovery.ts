@@ -8,10 +8,26 @@
  *
  * REST contract (hpp-x402-discovery/spec/openapi.yaml → routes/discovery.ts):
  *   GET /discovery/resources?type&network&limit&offset  -> { items: [...] }
- *   GET /discovery/search?q&type&network&sort&limit      -> { items: [...] }
+ *   GET /discovery/search?q&type&network&sort&limit      -> { resources: [...] }
  *   GET /discovery/resources/:id                         -> ResourceDetail
+ *
+ * Note the envelope key differs per endpoint (`items` for the listing,
+ * `resources` for search — openapi.yaml declares both shapes). We accept
+ * either on both paths: assuming one key silently turned every semantic
+ * search into "0 results" for the agent, since the data was there under the
+ * other name.
  */
 import { log } from "./log.js";
+
+/** Curated trust signals (Bazaar's four) — surfaced so an agent can prefer
+ *  services with real settlement history over freshly-listed ones. */
+export interface TrustSignals {
+  settlementCount?: number;
+  uniquePayers?: number;
+  lastSettlementAt?: string | null;
+  metadataScore?: number;
+  compositeScore?: number;
+}
 
 export interface DiscoveredResource {
   id: string;
@@ -27,21 +43,47 @@ export interface DiscoveredResource {
   scheme: string;
   priceAtomic: string;
   description?: string;
+  /** Seller-advertised display name (Bazaar `serviceName`). */
+  serviceName?: string;
+  tags?: string[];
+  /** Discovery probed the endpoint's 402 challenge successfully. */
+  verified?: boolean;
+  trustSignals?: TrustSignals;
   httpMethod?: string;
   bodyType?: "json" | "form-data" | "text";
   transport?: "streamable-http" | "sse";
   x402Version: number;
 }
 
+/**
+ * `metadata` mirrors the seller's x402 `extensions.bazaar` block: `info.input`
+ * carries a concrete example of the request body, `schema` a JSON Schema for
+ * it. This is the only machine-readable description of a service's input, so
+ * an agent that can't see it has to guess the body — which costs a real
+ * payment when the guess is wrong.
+ */
+export interface ResourceMetadata {
+  info?: {
+    input?: {
+      type?: string;
+      method?: string;
+      bodyType?: string;
+      body?: unknown;
+    };
+    output?: { type?: string; example?: unknown };
+  };
+  schema?: unknown;
+}
+
 export interface DiscoveredResourceDetail extends DiscoveredResource {
-  metadata?: { info?: unknown; schema?: unknown };
+  metadata?: ResourceMetadata;
 }
 
 export interface DiscoverQuery {
   /** Free-text semantic search; omit to browse the newest/highest-ranked. */
   query?: string;
   type?: "http" | "mcp" | "a2a" | "all";
-  /** CAIP-2 network filter, e.g. "eip155:190415". */
+  /** CAIP-2 network filter, e.g. "eip155:190415". `"all"` = no filter. */
   network?: string;
   limit?: number;
 }
@@ -74,7 +116,7 @@ export class DiscoveryClient {
     const limit = Math.min(Math.max(q.limit ?? 20, 1), 50);
     const params = new URLSearchParams();
     params.set("type", type);
-    if (q.network) params.set("network", q.network);
+    if (q.network && q.network !== "all") params.set("network", q.network);
     params.set("limit", String(limit));
 
     const query = q.query?.trim();
@@ -82,8 +124,12 @@ export class DiscoveryClient {
       ? `/discovery/search?q=${encodeURIComponent(query)}&${params.toString()}`
       : `/discovery/resources?${params.toString()}`;
 
-    const out = await this.get<{ items?: DiscoveredResource[] }>(path);
-    const items = out.items ?? [];
+    const out = await this.get<{
+      items?: DiscoveredResource[];
+      resources?: DiscoveredResource[];
+    }>(path);
+    // Accept either envelope key — see the module header.
+    const items = out.items ?? out.resources ?? [];
     log.debug("discovery.discover", { path, count: items.length });
     return items;
   }

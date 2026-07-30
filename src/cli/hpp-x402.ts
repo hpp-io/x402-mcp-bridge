@@ -25,7 +25,7 @@ import {
   deleteKeychain,
 } from "../keychain.js";
 import { DiscoveryClient } from "../discovery.js";
-import { hppCall } from "../discoveryTools.js";
+import { hppCall, hppDescribe } from "../discoveryTools.js";
 import { x402HttpCall } from "../httpX402.js";
 import { RawEoaSigner } from "../signers/raw-eoa.js";
 import { DirectBalance } from "../funds/direct-balance.js";
@@ -295,27 +295,39 @@ program
   });
 
 // ── discover (browse curated services) ────────────────────────────────
-const DEFAULT_DISCOVERY_URL = "https://x402-discovery.hpp.io";
+const DEFAULT_DISCOVERY_URL = "https://x402-explorer.hpp.io";
 program
   .command("discover [query]")
   .description("browse/search curated x402 services from the HPP discovery directory")
   .option("-t, --type <type>", "http|mcp|a2a|all", "all")
   .option("--scheme <scheme>", "filter by payment scheme (exact|upto)")
-  .option("-n, --network <id>", "CAIP-2 network filter (e.g. eip155:190415)")
+  .option("-n, --network <id>", "CAIP-2 network filter", DEFAULT_NETWORK)
+  .option("--all-networks", "don't filter by network")
   .option("--limit <n>", "max results", "20")
   .option("--url <url>", "discovery base URL", DEFAULT_DISCOVERY_URL)
   .action(
     async (
       query: string | undefined,
-      o: { type: string; scheme?: string; network?: string; limit: string; url: string },
+      o: {
+        type: string;
+        scheme?: string;
+        network: string;
+        allNetworks?: boolean;
+        limit: string;
+        url: string;
+      },
     ) => {
       const client = new DiscoveryClient(o.url);
       const limit = Number(o.limit);
+      // Default to the network this wallet pays on — a listing on another chain
+      // can't be settled here, so showing it only wastes a call. --all-networks
+      // opts back into the full directory.
+      const network = o.allNetworks ? "all" : o.network;
       // Scheme isn't a server-side filter, so over-fetch then narrow locally.
       const results0 = await client.discover({
         query,
         type: o.type as "http" | "mcp" | "a2a" | "all",
-        network: o.network,
+        network,
         limit: o.scheme ? 50 : limit,
       });
       const results = o.scheme
@@ -326,16 +338,48 @@ program
         return;
       }
       for (const r of results) {
+        const trust =
+          r.trustSignals?.settlementCount !== undefined
+            ? `  paid=${r.trustSignals.settlementCount}x`
+            : "";
         console.log(r.id);
-        console.log(`  ${r.type}  ${r.scheme}  price=${r.priceAtomic}  (${r.network})`);
+        console.log(
+          `  ${r.type}  ${r.scheme}  price=${r.priceAtomic}  (${r.network})` +
+            `${r.verified ? "  verified" : ""}${trust}`,
+        );
+        if (r.serviceName) console.log(`  ${r.serviceName}`);
         console.log(`  ${r.description ?? r.toolName ?? r.resourceUrl}`);
         if (r.resourceUrl) console.log(`  ${r.resourceUrl}`);
       }
       console.log(
-        `\n${results.length} service(s). Pay one:  hpp-x402 call <url or id> --body '{…}'`,
+        `\n${results.length} service(s). Inspect:  hpp-x402 describe <id>` +
+          `\n                 Pay one:  hpp-x402 call <url or id> --body '{…}'`,
       );
     },
   );
+
+// ── describe (input contract for one service — read-only) ─────────────
+program
+  .command("describe <resourceId>")
+  .description("show a service's input args (schema + example), price and endpoint — no payment")
+  .option("--url <url>", "discovery base URL", DEFAULT_DISCOVERY_URL)
+  .action(async (resourceId: string, o: { url: string }) => {
+    const res = await hppDescribe(new DiscoveryClient(o.url), { resourceId });
+    const text = (res.content ?? [])
+      .map((c) => (c as { text?: string }).text)
+      .filter(Boolean)
+      .join("\n");
+    if (res.isError) {
+      console.error(text);
+      process.exit(1);
+    }
+    // Pretty-print: the tool returns a compact JSON payload for MCP hosts.
+    try {
+      console.log(JSON.stringify(JSON.parse(text), null, 2));
+    } catch {
+      console.log(text);
+    }
+  });
 
 // ── call (pay + invoke a service — by URL or discovery id) ────────────
 program

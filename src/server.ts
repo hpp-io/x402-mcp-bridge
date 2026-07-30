@@ -23,10 +23,13 @@ import { PAY_A2A_TOOL, payA2aAgent, type PayA2aArgs } from "./a2a.js";
 import { X402_HTTP_TOOL, x402HttpCall, type X402HttpArgs } from "./httpX402.js";
 import {
   HPP_DISCOVER_TOOL,
+  HPP_DESCRIBE_TOOL,
   HPP_CALL_TOOL,
   hppDiscover,
+  hppDescribe,
   hppCall,
   type DiscoverArgs,
+  type DescribeArgs,
   type HppCallArgs,
 } from "./discoveryTools.js";
 import type { DiscoveryClient } from "./discovery.js";
@@ -132,7 +135,7 @@ export async function startBridgeServer(opts: BridgeServerOptions): Promise<void
       WALLET_SET_LIMIT_TOOL,
       PAY_A2A_TOOL,
       X402_HTTP_TOOL,
-      ...(opts.discovery ? [HPP_DISCOVER_TOOL, HPP_CALL_TOOL] : []),
+      ...(opts.discovery ? [HPP_DISCOVER_TOOL, HPP_DESCRIBE_TOOL, HPP_CALL_TOOL] : []),
       ...(opts.seller ? SELLER_TOOLS : []),
     ];
     log.debug("listTools", { count: upstreamTools.tools.length + localTools.length });
@@ -268,13 +271,30 @@ export async function startBridgeServer(opts: BridgeServerOptions): Promise<void
     }
 
     // Local tool: discover curated x402 services (read-only, no payment).
+    // Our network is passed as the default filter so the agent isn't offered
+    // services it cannot settle (see hppDiscover).
     if (opts.discovery && name === HPP_DISCOVER_TOOL.name) {
       try {
-        return await hppDiscover(opts.discovery, (args ?? {}) as unknown as DiscoverArgs);
+        return await hppDiscover(
+          opts.discovery,
+          (args ?? {}) as unknown as DiscoverArgs,
+          opts.network,
+        );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         log.error("hpp_discover.failed", { err: msg });
         return { content: [{ type: "text" as const, text: `hpp_discover error: ${msg}` }], isError: true };
+      }
+    }
+
+    // Local tool: describe one service's input contract (read-only, no payment).
+    if (opts.discovery && name === HPP_DESCRIBE_TOOL.name) {
+      try {
+        return await hppDescribe(opts.discovery, (args ?? {}) as unknown as DescribeArgs);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        log.error("hpp_describe.failed", { err: msg });
+        return { content: [{ type: "text" as const, text: `hpp_describe error: ${msg}` }], isError: true };
       }
     }
 
