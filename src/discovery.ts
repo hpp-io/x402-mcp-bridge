@@ -52,6 +52,14 @@ export interface DiscoveredResource {
   httpMethod?: string;
   bodyType?: "json" | "form-data" | "text";
   transport?: "streamable-http" | "sse";
+  /**
+   * mcp only — the endpoint to open a session against. Distinct from
+   * `resourceUrl`, which is the x402 payment identity the tool's 402 advertises
+   * (`<base>/mcp/tools/<tool>`) so settlements match the listing; that path is
+   * not connectable. Absent on listings registered before discovery split the
+   * two, where `resourceUrl` was itself the endpoint.
+   */
+  mcpServerUrl?: string;
   x402Version: number;
 }
 
