@@ -42,7 +42,8 @@ Restart your host and your agent can discover and pay for services. Browse and p
 from the terminal too:
 
 ```bash
-hpp-x402 discover --limit 5                        # shows type · scheme · price · URL · id
+hpp-x402 discover "price prediction"               # semantic search; your network only
+hpp-x402 describe <id>                             # input args (schema + example) — no payment
 hpp-x402 call <url-or-id> --body '{"hi":"there"}'  # pay + call — a URL, or an id from discover
 ```
 
@@ -70,7 +71,8 @@ the CLI use `npx -y -p @hpp-io/x402-mcp-bridge hpp-x402 <command>`.
 |------|--------------|
 | `wallet_address` | report your wallet address (to fund it) |
 | `hpp_discover` | list/search the curated HPP directory (read-only) |
-| `hpp_call` | call a discovered service; pays via your wallet |
+| `hpp_describe` | one service's input args — schema + example (read-only) |
+| `hpp_call` | call a discovered service (HTTP/MCP/A2A); pays via your wallet |
 | `x402_http_call` | pay + call any x402 HTTP endpoint |
 | `pay_a2a_agent` | pay + message another A2A agent |
 

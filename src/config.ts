@@ -79,11 +79,13 @@ const Schema = z.object({
   // a facilitator-indexed, semi-curated list of paid x402 services. "off"
   // disables them (manual RESOURCE_SERVER_URL only).
   HPP_X402_DISCOVERY: z.enum(["on", "off"]).optional().default("on"),
+  // The directory moved to x402-explorer.hpp.io; the old x402-discovery host
+  // only survives as a 301, so point at the canonical origin directly.
   HPP_X402_DISCOVERY_URL: z
     .string()
     .url()
     .optional()
-    .default("https://x402-discovery.hpp.io"),
+    .default("https://x402-explorer.hpp.io"),
 
   // Seller tools (A2 Phase 1). "on" registers seller_* MCP tools so this agent
   // can charge others over x402 (facilitator verify/settle wrappers). Off by
