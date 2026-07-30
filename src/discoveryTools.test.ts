@@ -224,3 +224,41 @@ describe("hpp_call failure hint", () => {
     expect(res.content).toHaveLength(1);
   });
 });
+
+describe("mcp endpoint vs payment identity", () => {
+  const deps = {
+    signer: { address: "0x" + "9".repeat(40) },
+    network: "eip155:181228",
+  } as never;
+  const mcpRow = {
+    ...DETAIL,
+    network: "eip155:181228",
+    type: "mcp" as const,
+    toolName: "compute_freqtrade",
+    // What discovery stores today: the payment identity, which is NOT connectable.
+    resourceUrl: "https://seller.example/mcp/tools/compute_freqtrade",
+    mcpServerUrl: "https://seller.example/mcp",
+    transport: "streamable-http" as const,
+  };
+
+  it("describe reports the endpoint to connect to, not just the identity", async () => {
+    const out = parse(
+      await hppDescribe(fakeClient({ detail: vi.fn(async () => mcpRow) }), {
+        resourceId: "r1",
+      }) as never,
+    );
+    expect(out.mcpServerUrl).toBe("https://seller.example/mcp");
+    expect(out.endpoint).toBe("https://seller.example/mcp/tools/compute_freqtrade");
+  });
+
+  // Older listings predate the split and put the endpoint in resourceUrl.
+  it("falls back to resourceUrl when the listing has no endpoint field", async () => {
+    const legacy = { ...mcpRow, mcpServerUrl: undefined, resourceUrl: "https://seller.example/mcp" };
+    const out = parse(
+      await hppDescribe(fakeClient({ detail: vi.fn(async () => legacy) }), {
+        resourceId: "r1",
+      }) as never,
+    );
+    expect(out.mcpServerUrl).toBe("https://seller.example/mcp");
+  });
+});

@@ -248,7 +248,12 @@ export async function hppDescribe(
     ...summarize(detail),
     endpoint: detail.resourceUrl,
     ...(detail.type === "http" ? { httpMethod: detail.httpMethod ?? "POST" } : {}),
-    ...(detail.type === "mcp" ? { transport: detail.transport ?? "streamable-http" } : {}),
+    ...(detail.type === "mcp"
+      ? {
+          transport: detail.transport ?? "streamable-http",
+          mcpServerUrl: detail.mcpServerUrl ?? detail.resourceUrl,
+        }
+      : {}),
     ...(detail.type === "a2a" && detail.skillId ? { skillId: detail.skillId } : {}),
     // `input` always describes the request body itself (not the bazaar
     // envelope), so `exampleBody` can be sent to hpp_call verbatim.
@@ -324,7 +329,11 @@ export async function hppCall(
         maxAmountAtomic: detail.priceAtomic,
       },
       {
-        serverUrl: detail.resourceUrl,
+        // Connect to the endpoint, not the payment identity. Older listings did
+        // not distinguish them, so `resourceUrl` is the fallback — deriving the
+        // root by trimming `/tools/<name>` would be guessing at a convention
+        // that already changed once.
+        serverUrl: detail.mcpServerUrl ?? detail.resourceUrl,
         toolName: detail.toolName,
         toolArgs: (args.body ?? {}) as Record<string, unknown>,
         transport: detail.transport,
