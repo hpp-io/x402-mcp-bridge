@@ -262,3 +262,52 @@ describe("mcp endpoint vs payment identity", () => {
     expect(out.mcpServerUrl).toBe("https://seller.example/mcp");
   });
 });
+
+describe("mcp input contract", () => {
+  // mcp sellers declare the tool's own argument object, and it is not shaped
+  // like the http body — this one wraps the payload in `args`. Reading only the
+  // http fields reported "not declared" for every mcp listing.
+  const mcpWithSchema = {
+    ...DETAIL,
+    type: "mcp" as const,
+    toolName: "compute_hello-world",
+    metadata: {
+      info: {
+        input: {
+          type: "mcp",
+          toolName: "compute_hello-world",
+          transport: "streamable-http",
+          inputSchema: {
+            type: "object",
+            properties: { args: { type: "object", properties: { input: { type: "string" } } } },
+            additionalProperties: false,
+          },
+          example: { args: { input: "world" } },
+        },
+      },
+    },
+  };
+
+  it("surfaces the tool's declared arguments, wrapper included", async () => {
+    const out = parse(
+      await hppDescribe(fakeClient({ detail: vi.fn(async () => mcpWithSchema) }), {
+        resourceId: "r1",
+      }) as never,
+    );
+    expect(out.input.exampleBody).toEqual({ args: { input: "world" } });
+    expect(out.input.bodySchema.properties.args).toBeDefined();
+  });
+
+  it("still says nothing when the seller declared an empty schema", async () => {
+    const bare = {
+      ...mcpWithSchema,
+      metadata: { info: { input: { type: "mcp", inputSchema: { type: "object" } } } },
+    };
+    const out = parse(
+      await hppDescribe(fakeClient({ detail: vi.fn(async () => bare) }), {
+        resourceId: "r1",
+      }) as never,
+    );
+    expect(String(out.input)).toContain("not declared");
+  });
+});

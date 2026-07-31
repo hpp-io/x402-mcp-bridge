@@ -88,9 +88,14 @@ export async function payMcpTool(
   // recorded only after the call comes back — a refused or failed call must not
   // consume budget. `refusal` carries our own reason out of the callbacks, which
   // otherwise can only say "false".
-  const state: { amount: bigint | null; refusal: string | null } = {
+  const state: {
+    amount: bigint | null;
+    refusal: string | null;
+    settle: { transaction?: string; network?: string; payer?: string } | null;
+  } = {
     amount: null,
     refusal: null,
+    settle: null,
   };
 
   const x402 = wrapMCPClientWithPaymentFromConfig(
@@ -188,6 +193,19 @@ export async function payMcpTool(
     },
   );
 
+  // An http seller puts its receipt in the response body; over MCP the settle
+  // result rides the tool result's `_meta` instead, which the SDK surfaces here
+  // and which we would otherwise drop — leaving the caller with no transaction
+  // to check on chain.
+  x402.onAfterPayment(async ({ settleResponse }) => {
+    const r = settleResponse as
+      | { success?: boolean; transaction?: string; network?: string; payer?: string }
+      | undefined;
+    if (r?.success && r.transaction) {
+      state.settle = { transaction: r.transaction, network: r.network, payer: r.payer };
+    }
+  });
+
   const url = new URL(args.serverUrl);
   const transport =
     args.transport === "sse"
@@ -214,13 +232,29 @@ export async function payMcpTool(
     if (!result.isError && state.amount !== null) {
       recordWalletSpend(state.amount);
     }
+    // Report what was paid next to what was returned, so a caller can verify the
+    // settlement without reaching for an explorer.
+    const settled =
+      !result.isError && state.settle
+        ? [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                settlement: {
+                  ...state.settle,
+                  amountAtomic: state.amount?.toString(),
+                },
+              }),
+            },
+          ]
+        : [];
     log.info("mcp.call.done", {
       server: url.host,
       tool: args.toolName,
       amountAtomic: state.amount?.toString() ?? "0",
       paid: state.amount !== null && !result.isError,
     });
-    return result;
+    return settled.length ? { ...result, content: [...result.content, ...settled] } : result;
   } catch (err) {
     // A refusal recorded above is the real cause — the thrown error is just the
     // SDK reporting that no payment was produced.
