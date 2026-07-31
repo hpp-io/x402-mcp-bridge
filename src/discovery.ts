@@ -74,9 +74,15 @@ export interface ResourceMetadata {
   info?: {
     input?: {
       type?: string;
+      /** http */
       method?: string;
       bodyType?: string;
       body?: unknown;
+      /** mcp — the seller declares the tool's argument shape here instead. */
+      toolName?: string;
+      transport?: string;
+      inputSchema?: unknown;
+      example?: unknown;
     };
     output?: { type?: string; example?: unknown };
   };

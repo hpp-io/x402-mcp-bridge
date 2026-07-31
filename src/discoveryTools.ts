@@ -186,12 +186,37 @@ function bodySchemaFrom(schema: unknown): unknown | null {
   return body;
 }
 
+/** Meaningful only if it says more than "some object". */
+function isInformative(schema: unknown): boolean {
+  if (schema == null || typeof schema !== "object") return false;
+  const keys = Object.keys(schema as object);
+  return keys.length > 0 && !(keys.length === 1 && keys[0] === "type");
+}
+
 /**
  * The seller-declared input contract, if any. Kept in one place because both
  * hpp_describe (up front) and hpp_call (on failure) need to show it.
+ *
+ * The two transports declare it in different places, and an mcp tool's payload
+ * is not shaped like the http body — sellers wrap it (e.g. `{args: {...}}`) —
+ * so reading only the http fields reported "not declared" for every mcp
+ * listing and left the agent guessing at a wrapper it cannot see.
  */
 function inputContract(detail: DiscoveredResourceDetail) {
   const input = detail.metadata?.info?.input;
+
+  if (detail.type === "mcp") {
+    // mcp: the seller declares the tool's own argument object.
+    const schema = isInformative(input?.inputSchema) ? input!.inputSchema : null;
+    const example = input?.example;
+    const hasExample = example != null && Object.keys(example as object).length > 0;
+    if (!schema && !hasExample) return null;
+    return {
+      ...(hasExample ? { exampleBody: example } : {}),
+      ...(schema ? { bodySchema: schema } : {}),
+    };
+  }
+
   const hasExample = input?.body != null && Object.keys(input.body as object).length > 0;
   const bodySchema = bodySchemaFrom(detail.metadata?.schema);
   if (!hasExample && !bodySchema) return null;
