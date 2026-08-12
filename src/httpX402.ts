@@ -37,7 +37,7 @@ import {
   recordPaid,
   acquireHostLock,
 } from "./policy.js";
-import { checkWalletSpend, recordWalletSpend } from "./spendGuard.js";
+import { reserveWalletSpend } from "./spendGuard.js";
 import { log } from "./log.js";
 
 export interface HttpX402Deps {
@@ -270,51 +270,60 @@ export async function x402HttpCall(
     if (deny) return errorResult(`blocked: ${deny}`);
 
     // wallet-wide guard (per-call + daily ledger) — uniform across all payment
-    // tools; blocks a runaway agent before signing.
-    const walletDeny = checkWalletSpend(amount);
-    if (walletDeny) return errorResult(`blocked: ${walletDeny}`);
-
-    // Ensure the delegate holds enough USDC.e (Safe autoTopup within the
-    // on-chain cap, or a light-mode balance check — same gate either way).
-    if (deps.funds) {
-      try {
-        await deps.funds.ensure(amount);
-      } catch (err) {
-        return errorResult(`funds check failed (spend cap / insufficient balance?): ${(err as Error).message}`);
+    // tools; reserves against the cap *before* signing so a concurrent payment
+    // can't also pass while this one settles (issue #10).
+    const reserved = reserveWalletSpend(amount);
+    if (!reserved.ok) return errorResult(`blocked: ${reserved.reason}`);
+    const reservation = reserved.reservation;
+    let committed = false;
+    try {
+      // Ensure the delegate holds enough USDC.e (Safe autoTopup within the
+      // on-chain cap, or a light-mode balance check — same gate either way).
+      if (deps.funds) {
+        try {
+          await deps.funds.ensure(amount);
+        } catch (err) {
+          return errorResult(`funds check failed (spend cap / insufficient balance?): ${(err as Error).message}`);
+        }
       }
-    }
 
-    // sign exact payload + encode Payment-Signature header
-    let payHeaders: Record<string, string>;
-    try {
-      const payload = await httpClient.createPaymentPayload(narrowedRequired as never);
-      payHeaders = httpClient.encodePaymentSignatureHeader(payload);
-    } catch (err) {
-      return errorResult(`failed to sign payment: ${(err as Error).message}`);
-    }
+      // sign exact payload + encode Payment-Signature header
+      let payHeaders: Record<string, string>;
+      try {
+        const payload = await httpClient.createPaymentPayload(narrowedRequired as never);
+        payHeaders = httpClient.encodePaymentSignatureHeader(payload);
+      } catch (err) {
+        return errorResult(`failed to sign payment: ${(err as Error).message}`);
+      }
 
-    // re-send with payment + preserved auth headers
-    let paid: Response;
-    try {
-      paid = await fetch(url, { ...init, headers: { ...baseHeaders, ...payHeaders } });
-    } catch (err) {
-      return errorResult(`paid request failed: ${(err as Error).message}`);
-    }
+      // re-send with payment + preserved auth headers
+      let paid: Response;
+      try {
+        paid = await fetch(url, { ...init, headers: { ...baseHeaders, ...payHeaders } });
+      } catch (err) {
+        return errorResult(`paid request failed: ${(err as Error).message}`);
+      }
 
-    const result = await toToolResult(paid);
-    // Record only successful paid calls so the cooldown gate can dedupe
-    // retries; a failed settle (isError) stays retryable.
-    if (!result.isError) {
-      recordPaid(host, (result.content[0] as { text?: string }).text ?? "");
-      recordWalletSpend(amount);
+      const result = await toToolResult(paid);
+      // Record only successful paid calls so the cooldown gate can dedupe
+      // retries; a failed settle (isError) stays retryable.
+      if (!result.isError) {
+        recordPaid(host, (result.content[0] as { text?: string }).text ?? "");
+        reservation.commit();
+        committed = true;
+      }
+      log.info("x402_http_call.done", {
+        host,
+        status: paid.status,
+        amountAtomic: amount.toString(),
+        paid: !result.isError,
+      });
+      return result;
+    } finally {
+      // Refund the reserved headroom on any early return / throw that didn't
+      // commit (release is idempotent and a no-op after commit).
+      if (!committed) reservation.release();
     }
-    log.info("x402_http_call.done", {
-      host,
-      status: paid.status,
-      amountAtomic: amount.toString(),
-      paid: !result.isError,
-    });
-    return result;
   } finally {
     release();
   }
