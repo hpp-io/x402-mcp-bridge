@@ -23,7 +23,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { Funds } from "./funds.js";
 import type { RawEoaSigner } from "./signers/raw-eoa.js";
-import { checkWalletSpend, recordWalletSpend } from "./spendGuard.js";
+import { reserveWalletSpend } from "./spendGuard.js";
 import { log } from "./log.js";
 
 export interface A2aPayerDeps {
@@ -239,74 +239,84 @@ export async function payA2aAgent(
 
   // 2a. Wallet-wide guard (per-call + daily ledger) — the same brake as the
   //     HTTP/MCP path, so A2A payments are capped too (previously uncapped).
-  const walletDeny = checkWalletSpend(requiredAtomic);
-  if (walletDeny) return errorResult(`blocked: ${walletDeny}`);
-
-  // 2b. Spend-cap: ensure the delegate holds enough USDC.e (Safe autoTopup or
-  //     light-mode balance check). Skipped when no funds source is wired.
-  if (deps.funds) {
-    try {
-      await deps.funds.ensure(requiredAtomic);
-    } catch (err) {
-      return errorResult(`funds check failed (spend cap / insufficient balance?): ${(err as Error).message}`);
+  //     Reserve against the cap *before* signing so a concurrent payment can't
+  //     also pass while this one settles (issue #10); commit / release below.
+  const reserved = reserveWalletSpend(requiredAtomic);
+  if (!reserved.ok) return errorResult(`blocked: ${reserved.reason}`);
+  const reservation = reserved.reservation;
+  let committed = false;
+  try {
+    // 2b. Spend-cap: ensure the delegate holds enough USDC.e (Safe autoTopup or
+    //     light-mode balance check). Skipped when no funds source is wired.
+    if (deps.funds) {
+      try {
+        await deps.funds.ensure(requiredAtomic);
+      } catch (err) {
+        return errorResult(`funds check failed (spend cap / insufficient balance?): ${(err as Error).message}`);
+      }
     }
+
+    // 3. Sign the exact payload with the bridge's delegate EOA against
+    //    the *narrowed* PaymentRequired (single-accept) so the SDK's
+    //    internal scheme/network selection cannot pick a different entry.
+    let payload: unknown;
+    try {
+      const client = new x402Client().register(
+        deps.network,
+        new ExactEvmScheme(deps.signer.viemAccount),
+      );
+      payload = await client.createPaymentPayload(narrowedRequired);
+    } catch (err) {
+      return errorResult(`failed to sign x402 payment: ${(err as Error).message}`);
+    }
+
+    // 4. Re-send with the payload in A2A metadata → expect completed.
+    let task: any;
+    try {
+      task = await a2aRpc(
+        a2aUrl,
+        "message/send",
+        userMessage(args.message, { skillId: args.skill, [PAYLOAD_KEY]: payload }),
+        timeoutMs,
+      );
+    } catch (err) {
+      return errorResult(`A2A paid request failed: ${(err as Error).message}`);
+    }
+
+    const finalState = task?.status?.state;
+    const payStatus = task?.metadata?.[STATUS_KEY];
+    log.info("a2a.paid", { agent: a2aUrl, skill: args.skill, state: finalState, payment: payStatus });
+
+    if (finalState !== "completed") {
+      return errorResult(
+        `A2A payment did not complete (state="${finalState}", payment="${payStatus}"): ` +
+          JSON.stringify(task?.status?.message ?? task?.metadata ?? {}).slice(0, 300),
+      );
+    }
+
+    // Settle completed → make the reserved spend permanent.
+    reservation.commit();
+    committed = true;
+    // Surface the a2a-x402 receipts (settle response + execution receipt, when
+    // the seller emits one) so the caller can verify what the payment bought.
+    const receipts = task?.metadata?.[RECEIPTS_KEY];
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            payment: payStatus,
+            ...(receipts ? { receipts } : {}),
+            ...extractResult(task),
+          }),
+        },
+      ],
+    };
+  } finally {
+    // Refund the reserved headroom on any early return / throw that didn't
+    // commit (release is idempotent and a no-op after commit).
+    if (!committed) reservation.release();
   }
-
-  // 3. Sign the exact payload with the bridge's delegate EOA against
-  //    the *narrowed* PaymentRequired (single-accept) so the SDK's
-  //    internal scheme/network selection cannot pick a different entry.
-  let payload: unknown;
-  try {
-    const client = new x402Client().register(
-      deps.network,
-      new ExactEvmScheme(deps.signer.viemAccount),
-    );
-    payload = await client.createPaymentPayload(narrowedRequired);
-  } catch (err) {
-    return errorResult(`failed to sign x402 payment: ${(err as Error).message}`);
-  }
-
-  // 4. Re-send with the payload in A2A metadata → expect completed.
-  let task: any;
-  try {
-    task = await a2aRpc(
-      a2aUrl,
-      "message/send",
-      userMessage(args.message, { skillId: args.skill, [PAYLOAD_KEY]: payload }),
-      timeoutMs,
-    );
-  } catch (err) {
-    return errorResult(`A2A paid request failed: ${(err as Error).message}`);
-  }
-
-  const finalState = task?.status?.state;
-  const payStatus = task?.metadata?.[STATUS_KEY];
-  log.info("a2a.paid", { agent: a2aUrl, skill: args.skill, state: finalState, payment: payStatus });
-
-  if (finalState !== "completed") {
-    return errorResult(
-      `A2A payment did not complete (state="${finalState}", payment="${payStatus}"): ` +
-        JSON.stringify(task?.status?.message ?? task?.metadata ?? {}).slice(0, 300),
-    );
-  }
-
-  // Record the successful spend against the wallet-wide daily ledger.
-  recordWalletSpend(requiredAtomic);
-  // Surface the a2a-x402 receipts (settle response + execution receipt, when
-  // the seller emits one) so the caller can verify what the payment bought.
-  const receipts = task?.metadata?.[RECEIPTS_KEY];
-  return {
-    content: [
-      {
-        type: "text",
-        text: JSON.stringify({
-          payment: payStatus,
-          ...(receipts ? { receipts } : {}),
-          ...extractResult(task),
-        }),
-      },
-    ],
-  };
 }
 
 function extractResult(task: any): Record<string, unknown> {

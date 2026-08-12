@@ -20,7 +20,16 @@
  * The daily ledger lives at `${HPP_X402_HOME|~/.hpp-x402}/ledger.json` and only
  * keeps today + yesterday (rolling).
  */
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import {
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  openSync,
+  closeSync,
+  unlinkSync,
+  renameSync,
+  statSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { resolve as pathResolve } from "node:path";
 
@@ -53,9 +62,68 @@ function saveLedger(l: Ledger): void {
   for (const k of Object.keys(l)) if (!keep.has(k)) delete l[k];
   try {
     mkdirSync(home(), { recursive: true });
-    writeFileSync(ledgerPath(), JSON.stringify(l), { mode: 0o600 });
+    // Write-then-rename so a crash mid-write can never leave a half-written
+    // ledger (rename is atomic on POSIX). The temp name is pid-scoped, and we
+    // only ever write while holding the lock, so temps can't collide.
+    const tmp = `${ledgerPath()}.tmp.${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(l), { mode: 0o600 });
+    renameSync(tmp, ledgerPath());
   } catch (err) {
     log.debug("spendGuard.saveFailed", { err: (err as Error).message });
+  }
+}
+
+// Cross-process lock over the ledger. A single wallet can be driven by
+// concurrent tool calls in one process AND by several bridge processes sharing
+// $HPP_X402_HOME/ledger.json. An exclusive-create lockfile serialises the
+// read-modify-write in both cases, so a reservation and a record can't clobber
+// each other (the lost-write half of issue #10).
+const LOCK_STALE_MS = 5_000;
+const LOCK_SPIN_MS = 5;
+const LOCK_MAX_WAIT_MS = 2_000;
+
+function sleepSync(ms: number): void {
+  // The critical section is a few synchronous fs ops (sub-ms), so we block
+  // briefly rather than busy-spin the CPU while waiting for the lock.
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function withLedgerLock<T>(fn: () => T): T {
+  const lock = `${ledgerPath()}.lock`;
+  mkdirSync(home(), { recursive: true });
+  const start = Date.now();
+  let fd: number | undefined;
+  for (;;) {
+    try {
+      fd = openSync(lock, "wx"); // atomic: fails with EEXIST if already held
+      break;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      try {
+        // Reclaim a lock orphaned by a crashed holder.
+        if (Date.now() - statSync(lock).mtimeMs > LOCK_STALE_MS) {
+          unlinkSync(lock);
+          continue;
+        }
+      } catch {
+        /* lock vanished between stat and unlink — just retry the open */
+      }
+      if (Date.now() - start > LOCK_MAX_WAIT_MS) {
+        // Fail closed: refusing a payment is safer than racing the cap.
+        throw new Error("spendGuard: could not acquire ledger lock (contention/stale)");
+      }
+      sleepSync(LOCK_SPIN_MS);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      closeSync(fd);
+      unlinkSync(lock);
+    } catch {
+      /* already released */
+    }
   }
 }
 
@@ -90,13 +158,100 @@ export function checkWalletSpend(amount: bigint): string | null {
   return null;
 }
 
-/** Record a *successful* payment against today's wallet-wide total. */
+/**
+ * Record a *successful* payment against today's wallet-wide total.
+ *
+ * The load→add→save runs under the ledger lock so two concurrent records (or a
+ * record racing a reservation) can't clobber each other's write.
+ */
 export function recordWalletSpend(amount: bigint): void {
   if (amount <= 0n) return;
-  const l = loadLedger();
-  l[dayKey(0)] = (BigInt(l[dayKey(0)] ?? "0") + amount).toString();
-  saveLedger(l);
-  log.debug("spendGuard.recorded", { amount: amount.toString(), spentToday: l[dayKey(0)] });
+  withLedgerLock(() => {
+    const l = loadLedger();
+    const key = dayKey(0);
+    l[key] = (BigInt(l[key] ?? "0") + amount).toString();
+    saveLedger(l);
+    log.debug("spendGuard.recorded", { amount: amount.toString(), spentToday: l[key] });
+  });
+}
+
+/** A debited slice of the daily cap, held across the settle await. */
+export type SpendReservation = {
+  amount: bigint;
+  /** Settle succeeded — keep the debited headroom permanently. */
+  commit(): void;
+  /** Settle failed / call refused — return the headroom to today's budget. */
+  release(): void;
+};
+
+/**
+ * Atomically reserve `amount` against the wallet-wide caps *before* signing.
+ *
+ * The debit happens now, under the ledger lock — not after the on-chain settle
+ * `await`. So a second concurrent payment sees the headroom already gone and is
+ * refused while the first is still in flight. This closes the
+ * check-then-settle-then-record window (issue #10):
+ *
+ *   reserve → sign → settle → commit()   (success)
+ *                          ↘ release()   (failure / refusal)
+ *
+ * Backward compatible: with no daily cap set (or a non-positive amount) it
+ * returns a no-op reservation and never touches the ledger, so per-call-only or
+ * uncapped setups behave exactly as before.
+ */
+export function reserveWalletSpend(
+  amount: bigint,
+): { ok: true; reservation: SpendReservation } | { ok: false; reason: string } {
+  const { maxPerCall, maxPerDay } = walletLimits();
+
+  if (maxPerCall != null && amount > maxPerCall) {
+    return {
+      ok: false,
+      reason: `wallet per-call cap exceeded: ${amount} > ${maxPerCall} atomic. Raise it with wallet_set_limit (or hpp-x402 policy defaults --max-per-call).`,
+    };
+  }
+
+  // Nothing to debit — keep callers uniform without touching the ledger/lock.
+  if (maxPerDay == null || amount <= 0n) {
+    return { ok: true, reservation: { amount, commit() {}, release() {} } };
+  }
+
+  return withLedgerLock(() => {
+    const key = dayKey(0);
+    const l = loadLedger();
+    const spent = BigInt(l[key] ?? "0");
+    const after = spent + amount;
+    if (after > maxPerDay) {
+      return {
+        ok: false as const,
+        reason: `wallet daily cap exceeded: ${spent} spent + ${amount} = ${after} > ${maxPerDay} atomic today. Resets at UTC midnight; raise with wallet_set_limit.`,
+      };
+    }
+    l[key] = after.toString();
+    saveLedger(l);
+    log.debug("spendGuard.reserved", { amount: amount.toString(), spentToday: l[key] });
+
+    let settled = false; // commit or release, whichever fires first, wins once
+    const reservation: SpendReservation = {
+      amount,
+      commit() {
+        settled = true; // already debited at reserve time — nothing to write
+      },
+      release() {
+        if (settled) return; // committed reservations are permanent; idempotent
+        settled = true;
+        withLedgerLock(() => {
+          const cur = loadLedger();
+          const k = dayKey(0);
+          const now = BigInt(cur[k] ?? "0");
+          cur[k] = (now > amount ? now - amount : 0n).toString();
+          saveLedger(cur);
+          log.debug("spendGuard.released", { amount: amount.toString(), spentToday: cur[k] });
+        });
+      },
+    };
+    return { ok: true as const, reservation };
+  });
 }
 
 /**

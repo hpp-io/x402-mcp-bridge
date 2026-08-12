@@ -33,7 +33,7 @@ import type { Network } from "@x402/core/types";
 import type { Funds } from "./funds.js";
 import type { RawEoaSigner } from "./signers/raw-eoa.js";
 import { loadPolicy, checkAccess, checkAmount } from "./policy.js";
-import { checkWalletSpend, recordWalletSpend } from "./spendGuard.js";
+import { reserveWalletSpend, type SpendReservation } from "./spendGuard.js";
 import { log } from "./log.js";
 
 export interface McpCallDeps {
@@ -92,10 +92,12 @@ export async function payMcpTool(
     amount: bigint | null;
     refusal: string | null;
     settle: { transaction?: string; network?: string; payer?: string } | null;
+    reservation: SpendReservation | null;
   } = {
     amount: null,
     refusal: null,
     settle: null,
+    reservation: null,
   };
 
   const x402 = wrapMCPClientWithPaymentFromConfig(
@@ -172,16 +174,22 @@ export async function payMcpTool(
           state.refusal = `blocked: ${capDeny}`;
           return false;
         }
-        const walletDeny = checkWalletSpend(amount);
-        if (walletDeny) {
-          state.refusal = `blocked: ${walletDeny}`;
+        // Reserve against the wallet-wide cap *before* signing, so a second
+        // concurrent payment can't also pass while this one settles (issue #10).
+        // The reservation is committed on success / released on failure below.
+        const reserved = reserveWalletSpend(amount);
+        if (!reserved.ok) {
+          state.refusal = `blocked: ${reserved.reason}`;
           return false;
         }
+        state.reservation = reserved.reservation;
 
         if (deps.funds) {
           try {
             await deps.funds.ensure(amount);
           } catch (err) {
+            state.reservation.release();
+            state.reservation = null;
             state.refusal = `funds check failed (spend cap / insufficient balance?): ${(err as Error).message}`;
             return false;
           }
@@ -229,8 +237,10 @@ export async function payMcpTool(
 
     if (state.refusal) return errorResult(state.refusal);
 
-    if (!result.isError && state.amount !== null) {
-      recordWalletSpend(state.amount);
+    // Settle succeeded → make the reservation permanent. On any error/refusal we
+    // fall through without committing and the `finally` releases the headroom.
+    if (!result.isError) {
+      state.reservation?.commit();
     }
     // Report what was paid next to what was returned, so a caller can verify the
     // settlement without reaching for an explorer.
@@ -271,6 +281,9 @@ export async function payMcpTool(
     }
     return errorResult(`mcp call failed: ${msg}`);
   } finally {
+    // Catch-all: refund the reserved headroom unless it was committed on success
+    // (release is idempotent and a no-op after commit).
+    state.reservation?.release();
     await base.close().catch(() => {});
   }
 }
