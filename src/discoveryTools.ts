@@ -29,6 +29,7 @@ import type {
   DiscoveredResourceDetail,
 } from "./discovery.js";
 import { x402HttpCall, type HttpX402Deps } from "./httpX402.js";
+import { resolveFileRefs, spoolToolResult } from "./spool.js";
 import { payMcpTool } from "./mcpCall.js";
 import { payA2aAgent } from "./a2a.js";
 
@@ -296,6 +297,15 @@ export async function hppCall(
     return errorResult("resourceId required");
   }
 
+  // "@file:/abs/path" body values → file base64, before any transport (and
+  // before any payment). The http branch would also resolve inside
+  // x402HttpCall; doing it here once covers mcp/a2a too.
+  try {
+    args = { ...args, body: resolveFileRefs(args.body) };
+  } catch (err) {
+    return errorResult(`file ref: ${(err as Error).message}`);
+  }
+
   let detail: DiscoveredResourceDetail;
   try {
     detail = await client.detail(args.resourceId);
@@ -364,7 +374,9 @@ export async function hppCall(
         transport: detail.transport,
       },
     );
-    return withInputHintOnError(result, detail);
+    // MCP results carry the service output inline — spool oversized fields
+    // (base64 media) into local files, same as the http branch.
+    return withInputHintOnError(spoolToolResult(result, "hpp_call"), detail);
   }
 
   if (detail.type !== "http") {
