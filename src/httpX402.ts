@@ -38,6 +38,7 @@ import {
   acquireHostLock,
 } from "./policy.js";
 import { reserveWalletSpend, settleReservation, type SettleOutcome } from "./spendGuard.js";
+import { isBinaryContentType, resolveFileRefs, spoolBinary, spoolValue } from "./spool.js";
 import { log } from "./log.js";
 
 export interface HttpX402Deps {
@@ -127,6 +128,22 @@ function errorResult(text: string): CallToolResult {
 }
 
 async function toToolResult(res: Response): Promise<CallToolResult> {
+  // Raw binary responses (OpenAI-style media APIs: Content-Type audio/*,
+  // image/* …) would be mangled by res.text() — spool the bytes and hand the
+  // model a file reference instead.
+  const contentType = res.headers.get("content-type");
+  if (res.ok && isBinaryContentType(contentType)) {
+    const buf = Buffer.from(await res.arrayBuffer());
+    const ref = spoolBinary(buf, contentType ?? "", "x402_http_call");
+    if (ref) {
+      return {
+        content: [
+          { type: "text", text: JSON.stringify({ status: res.status, ok: true, contentType, body: ref }) },
+        ],
+        isError: false,
+      };
+    }
+  }
   const text = await res.text();
   let parsed: unknown = text;
   try {
@@ -134,6 +151,10 @@ async function toToolResult(res: Response): Promise<CallToolResult> {
   } catch {
     /* keep raw text */
   }
+  // Oversized string fields (e.g. base64 audio in a JSON body) are written to
+  // local files and replaced with `$spooled` descriptors — the model should
+  // never carry media payloads through its context.
+  if (res.ok) parsed = spoolValue(parsed, "x402_http_call");
   return {
     content: [
       { type: "text", text: JSON.stringify({ status: res.status, ok: res.ok, body: parsed }) },
@@ -149,6 +170,17 @@ export async function x402HttpCall(
   const url = args.url;
   if (!url || typeof url !== "string") return errorResult("url required");
   const method = (args.method ?? "POST").toUpperCase();
+
+  // "@file:/abs/path" body values become the file's base64 here, so large
+  // inputs (STT audio) never transit the model. Fail before any request —
+  // and before any payment — on a bad reference.
+  let body: unknown;
+  try {
+    body = resolveFileRefs(args.body);
+  } catch (err) {
+    return errorResult(`file ref: ${(err as Error).message}`);
+  }
+  args = { ...args, body };
 
   const policy = loadPolicy();
 
