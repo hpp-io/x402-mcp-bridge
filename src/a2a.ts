@@ -23,7 +23,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import type { Funds } from "./funds.js";
 import type { RawEoaSigner } from "./signers/raw-eoa.js";
-import { reserveWalletSpend } from "./spendGuard.js";
+import { reserveWalletSpend, settleReservation, type SettleOutcome } from "./spendGuard.js";
 import { log } from "./log.js";
 
 export interface A2aPayerDeps {
@@ -244,7 +244,9 @@ export async function payA2aAgent(
   const reserved = reserveWalletSpend(requiredAtomic);
   if (!reserved.ok) return errorResult(`blocked: ${reserved.reason}`);
   const reservation = reserved.reservation;
-  let committed = false;
+  // Default clean-failure (release); a sent-then-failed RPC flips to ambiguous
+  // (hold), a completed task to success (commit) — issue #12, tier 1.
+  let outcome: SettleOutcome = "clean-failure";
   try {
     // 2b. Spend-cap: ensure the delegate holds enough USDC.e (Safe autoTopup or
     //     light-mode balance check). Skipped when no funds source is wired.
@@ -280,6 +282,9 @@ export async function payA2aAgent(
         timeoutMs,
       );
     } catch (err) {
+      // Payment was sent and the RPC threw (timeout / transport) — can't tell if
+      // the settle landed. Hold the reservation (issue #12, T1).
+      outcome = "ambiguous";
       return errorResult(`A2A paid request failed: ${(err as Error).message}`);
     }
 
@@ -288,6 +293,8 @@ export async function payA2aAgent(
     log.info("a2a.paid", { agent: a2aUrl, skill: args.skill, state: finalState, payment: payStatus });
 
     if (finalState !== "completed") {
+      // The agent answered with a non-completed state — a definitive non-settle,
+      // so release the headroom.
       return errorResult(
         `A2A payment did not complete (state="${finalState}", payment="${payStatus}"): ` +
           JSON.stringify(task?.status?.message ?? task?.metadata ?? {}).slice(0, 300),
@@ -295,8 +302,7 @@ export async function payA2aAgent(
     }
 
     // Settle completed → make the reserved spend permanent.
-    reservation.commit();
-    committed = true;
+    outcome = "success";
     // Surface the a2a-x402 receipts (settle response + execution receipt, when
     // the seller emits one) so the caller can verify what the payment bought.
     const receipts = task?.metadata?.[RECEIPTS_KEY];
@@ -313,9 +319,8 @@ export async function payA2aAgent(
       ],
     };
   } finally {
-    // Refund the reserved headroom on any early return / throw that didn't
-    // commit (release is idempotent and a no-op after commit).
-    if (!committed) reservation.release();
+    // Commit on success, release on a clean failure, HOLD on ambiguous (T1).
+    settleReservation(reservation, outcome);
   }
 }
 

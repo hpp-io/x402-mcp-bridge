@@ -37,7 +37,7 @@ import {
   recordPaid,
   acquireHostLock,
 } from "./policy.js";
-import { reserveWalletSpend } from "./spendGuard.js";
+import { reserveWalletSpend, settleReservation, type SettleOutcome } from "./spendGuard.js";
 import { log } from "./log.js";
 
 export interface HttpX402Deps {
@@ -275,7 +275,9 @@ export async function x402HttpCall(
     const reserved = reserveWalletSpend(amount);
     if (!reserved.ok) return errorResult(`blocked: ${reserved.reason}`);
     const reservation = reserved.reservation;
-    let committed = false;
+    // Default to clean-failure (release); only a sent-then-failed request flips
+    // it to ambiguous (hold) or a confirmed response to success (issue #12, T1).
+    let outcome: SettleOutcome = "clean-failure";
     try {
       // Ensure the delegate holds enough USDC.e (Safe autoTopup within the
       // on-chain cap, or a light-mode balance check — same gate either way).
@@ -301,6 +303,9 @@ export async function x402HttpCall(
       try {
         paid = await fetch(url, { ...init, headers: { ...baseHeaders, ...payHeaders } });
       } catch (err) {
+        // The payment was sent and the transport threw — we can't tell whether
+        // the settle landed. Hold the reservation (issue #12, T1).
+        outcome = "ambiguous";
         return errorResult(`paid request failed: ${(err as Error).message}`);
       }
 
@@ -309,8 +314,14 @@ export async function x402HttpCall(
       // retries; a failed settle (isError) stays retryable.
       if (!result.isError) {
         recordPaid(host, (result.content[0] as { text?: string }).text ?? "");
-        reservation.commit();
-        committed = true;
+        outcome = "success";
+      } else if (paid.status >= 500) {
+        // Gateway / server 5xx after sending the payment: the origin may have
+        // settled before the failure — treat as ambiguous and hold, not release.
+        outcome = "ambiguous";
+      } else {
+        // A definitive 4xx-style rejection: the settle did not happen → release.
+        outcome = "clean-failure";
       }
       log.info("x402_http_call.done", {
         host,
@@ -320,9 +331,8 @@ export async function x402HttpCall(
       });
       return result;
     } finally {
-      // Refund the reserved headroom on any early return / throw that didn't
-      // commit (release is idempotent and a no-op after commit).
-      if (!committed) reservation.release();
+      // Commit on success, release on a clean failure, HOLD on ambiguous (T1).
+      settleReservation(reservation, outcome);
     }
   } finally {
     release();
