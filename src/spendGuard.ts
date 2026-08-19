@@ -255,6 +255,38 @@ export function reserveWalletSpend(
 }
 
 /**
+ * How a payment attempt ended, from the caller's point of view.
+ *   - `success`        — settle confirmed → commit the reservation.
+ *   - `clean-failure`  — money definitely did NOT leave: a pre-send error
+ *                        (funds/sign/no-accept), an explicit rejection, or a
+ *                        definitive non-settle response → release.
+ *   - `ambiguous`      — the settle request was sent and we never got a
+ *                        definitive answer (timeout / transport error / gateway
+ *                        5xx). The tx may have landed even without a receipt.
+ */
+export type SettleOutcome = "success" | "clean-failure" | "ambiguous";
+
+/**
+ * Resolve a reservation from how the settle attempt ended (issue #12, tier 1).
+ *
+ * The important case is `ambiguous`: we do **nothing**, leaving the debit in
+ * place ("hold"). Releasing on an ambiguous timeout is exactly what let the
+ * daily tally drift *below* reality and loosen the cap. Holding errs toward
+ * "spent", so the cap can only ever be too tight, never too loose; a
+ * genuinely-absent spend self-heals at the next UTC-midnight ledger reset (or
+ * is reconciled promptly against on-chain state by tier 2, if implemented).
+ */
+export function settleReservation(
+  reservation: SpendReservation | null,
+  outcome: SettleOutcome,
+): void {
+  if (!reservation) return;
+  if (outcome === "success") reservation.commit();
+  else if (outcome === "clean-failure") reservation.release();
+  // "ambiguous" → hold: leave the debit; do not commit or release.
+}
+
+/**
  * Set the wallet-wide spend limits (persisted to policy._defaults.limits), so
  * the guard enforces them. Omitted fields are left unchanged. Atomic strings.
  */

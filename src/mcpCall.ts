@@ -33,7 +33,12 @@ import type { Network } from "@x402/core/types";
 import type { Funds } from "./funds.js";
 import type { RawEoaSigner } from "./signers/raw-eoa.js";
 import { loadPolicy, checkAccess, checkAmount } from "./policy.js";
-import { reserveWalletSpend, type SpendReservation } from "./spendGuard.js";
+import {
+  reserveWalletSpend,
+  settleReservation,
+  type SpendReservation,
+  type SettleOutcome,
+} from "./spendGuard.js";
 import { log } from "./log.js";
 
 export interface McpCallDeps {
@@ -230,6 +235,10 @@ export async function payMcpTool(
     );
   }
 
+  // How the settle ended, for the reservation's fate (issue #12, tier 1). Default
+  // to `clean-failure` (release) — only a sent-then-timed-out call flips it to
+  // `ambiguous` (hold), and a confirmed result flips it to `success` (commit).
+  let outcome: SettleOutcome = "clean-failure";
   try {
     const result = (await x402.callTool(args.toolName, args.toolArgs ?? {}, {
       timeout: DEFAULT_TIMEOUT_MS,
@@ -237,11 +246,9 @@ export async function payMcpTool(
 
     if (state.refusal) return errorResult(state.refusal);
 
-    // Settle succeeded → make the reservation permanent. On any error/refusal we
-    // fall through without committing and the `finally` releases the headroom.
-    if (!result.isError) {
-      state.reservation?.commit();
-    }
+    // A returned result is a definitive answer from the server: success commits,
+    // an error means the settle did not happen (release).
+    outcome = result.isError ? "clean-failure" : "success";
     // Report what was paid next to what was returned, so a caller can verify the
     // settlement without reaching for an explorer.
     const settled =
@@ -267,23 +274,26 @@ export async function payMcpTool(
     return settled.length ? { ...result, content: [...result.content, ...settled] } : result;
   } catch (err) {
     // A refusal recorded above is the real cause — the thrown error is just the
-    // SDK reporting that no payment was produced.
+    // SDK reporting that no payment was produced. (outcome stays clean-failure.)
     if (state.refusal) return errorResult(state.refusal);
     const msg = (err as Error).message;
     // The SDK drops accepts for networks/schemes we didn't register, then throws
     // its own multi-line dump. Say the same thing the HTTP path says, so an agent
-    // reading either error learns the same fact.
+    // reading either error learns the same fact. Nothing was signed or sent here,
+    // so this is a clean failure — release.
     if (msg.includes("No network/scheme registered")) {
       return errorResult(
         `no payable accept (exact${useUpto ? "/upto" : ""}) for network ${deps.network} ` +
           `at ${args.serverUrl} — the service prices in a network/scheme this wallet can't settle`,
       );
     }
+    // Otherwise the payment was produced and the call threw mid-flight (timeout /
+    // transport). We can't tell whether the settle landed → hold the reservation
+    // (issue #12, tier 1) rather than release and risk loosening the cap.
+    outcome = "ambiguous";
     return errorResult(`mcp call failed: ${msg}`);
   } finally {
-    // Catch-all: refund the reserved headroom unless it was committed on success
-    // (release is idempotent and a no-op after commit).
-    state.reservation?.release();
+    settleReservation(state.reservation, outcome);
     await base.close().catch(() => {});
   }
 }
