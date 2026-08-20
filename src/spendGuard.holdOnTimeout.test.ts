@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import {
   settleReservation,
   spentToday,
 } from "./spendGuard.js";
+import { log } from "./log.js";
 
 let home: string;
 beforeEach(() => {
@@ -73,6 +74,20 @@ describe("settleReservation — hold-on-ambiguous-timeout (issue #12, tier 1)", 
     settleReservation(reserve(100n), "ambiguous"); // +100 (held)
     settleReservation(reserve(100n), "clean-failure"); // -100 (released)
     expect(spentToday()).toBe(200n);
+  });
+
+  it("emits spendGuard.heldOnAmbiguous only on a hold (observability signal)", () => {
+    setLimits({ maxPerDayAtomic: "5000" });
+    const spy = vi.spyOn(log, "info");
+    try {
+      settleReservation(reserve(100n), "success");
+      settleReservation(reserve(100n), "clean-failure");
+      expect(spy.mock.calls.some(([m]) => m === "spendGuard.heldOnAmbiguous")).toBe(false);
+      settleReservation(reserve(100n), "ambiguous");
+      expect(spy.mock.calls.some(([m]) => m === "spendGuard.heldOnAmbiguous")).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("null reservation is a no-op for every outcome", () => {

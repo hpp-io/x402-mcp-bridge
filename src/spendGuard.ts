@@ -283,7 +283,12 @@ export function settleReservation(
   if (!reservation) return;
   if (outcome === "success") reservation.commit();
   else if (outcome === "clean-failure") reservation.release();
-  // "ambiguous" → hold: leave the debit; do not commit or release.
+  else {
+    // "ambiguous" → hold: leave the debit; do not commit or release. Emit so ops
+    // can see how often this fires in production — that rate is the signal for
+    // whether the tier-2 on-chain reconcile (#12) is ever worth building.
+    log.info("spendGuard.heldOnAmbiguous", { amount: reservation.amount.toString() });
+  }
 }
 
 /**
