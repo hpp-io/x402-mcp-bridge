@@ -110,7 +110,13 @@ export const X402_HTTP_TOOL = {
     properties: {
       url: { type: "string", description: "Target endpoint URL (host must be allow-listed)." },
       method: { type: "string", description: "HTTP method (default POST)." },
-      body: { type: "object", description: "JSON request body (for POST/PUT/...)." },
+      body: {
+        type: "object",
+        description:
+          "JSON request body (for POST/PUT/...). A field value of " +
+          "\"@file:/absolute/path\" is replaced with that file's base64 by the " +
+          "bridge — use it for local media instead of reading the file yourself.",
+      },
     },
     required: ["url"],
     additionalProperties: false,
