@@ -106,7 +106,11 @@ export const HPP_CALL_TOOL = {
       },
       body: {
         type: "object",
-        description: "Request body / input args for the service.",
+        description:
+          "Request body / input args for the service. To send a local file " +
+          "(e.g. audio for transcription), set the field to the string " +
+          "\"@file:/absolute/path\" — the bridge substitutes the file's base64 " +
+          "so you never read or emit the content yourself.",
       },
     },
     required: ["resourceId"],
