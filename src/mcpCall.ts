@@ -26,7 +26,7 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { wrapMCPClientWithPaymentFromConfig } from "@x402/mcp";
-import { ExactEvmScheme } from "@x402/evm/exact/client";
+import { makeExactClient, needsOwnFunds, orderAccepts, type PaymentDelegation } from "./erc7710.js";
 import { UptoEvmScheme } from "@x402/evm/upto/client";
 import type { Network } from "@x402/core/types";
 
@@ -45,6 +45,8 @@ export interface McpCallDeps {
   signer: RawEoaSigner;
   network: Network;
   funds?: Funds;
+  /** ERC-7710 delegation: pay `erc7710` accepts from the user's account. */
+  paymentDelegation?: PaymentDelegation;
   /** Enables the upto scheme (needs an RPC to read the EIP-2612 nonce). */
   rpcUrl?: string;
   /**
@@ -109,7 +111,7 @@ export async function payMcpTool(
     base,
     {
       schemes: [
-        { network: deps.network, client: new ExactEvmScheme(deps.signer.viemAccount) },
+        { network: deps.network, client: makeExactClient(deps.signer.viemAccount, deps.paymentDelegation) },
         ...(useUpto
           ? [
               {
@@ -121,8 +123,9 @@ export async function payMcpTool(
       ],
       paymentRequirementsSelector: (_v, accepts) => {
         const supported = new Set<string>(["exact", ...(useUpto ? ["upto"] : [])]);
-        const eligible = accepts.filter(
-          (a) => a.network === deps.network && supported.has(a.scheme),
+        const eligible = orderAccepts(
+          accepts.filter((a) => a.network === deps.network && supported.has(a.scheme)),
+          Boolean(deps.paymentDelegation),
         );
         // Buyer force wins; otherwise the seller's advertised order.
         const picked = deps.preferScheme
@@ -153,7 +156,7 @@ export async function payMcpTool(
       onPaymentRequested: async ({ paymentRequired }) => {
         if (state.refusal) return false;
         const accept =
-          paymentRequired.accepts?.find((a) => a.network === deps.network) ??
+          orderAccepts((paymentRequired.accepts ?? []).filter((a) => a.network === deps.network), Boolean(deps.paymentDelegation))[0] ??
           paymentRequired.accepts?.[0];
         if (!accept) {
           state.refusal = "402 carried no payment requirements";
@@ -189,7 +192,7 @@ export async function payMcpTool(
         }
         state.reservation = reserved.reservation;
 
-        if (deps.funds) {
+        if (deps.funds && needsOwnFunds(accept)) {
           try {
             await deps.funds.ensure(amount);
           } catch (err) {

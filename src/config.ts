@@ -52,6 +52,12 @@ const Schema = z.object({
   // Optional — defaults to HPP Sepolia so a bare `npx @hpp-io/x402-mcp-bridge`
   // boots with zero config (see NETWORK_DEFAULTS + runBridge auto-wallet).
   HPP_NETWORK: z.string().regex(/^eip155:\d+$/).optional().default("eip155:181228"),
+  /**
+   * ERC-7710 payment delegation (hex permissionContext) the user's wallet granted to this
+   * bridge's key: pays `erc7710` accepts from the USER's smart account under on-chain caps —
+   * the bridge key itself needs no USDC.e. Validated against the key at boot (see erc7710.ts).
+   */
+  HPP_PAYMENT_DELEGATION: z.string().regex(/^0x[0-9a-fA-F]*$/).optional(),
 
   // Optional knobs ------------------------------------------------------
   // How much to pull on each topup, in atomic USDC.e units. If unset,

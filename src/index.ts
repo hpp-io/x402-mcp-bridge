@@ -9,6 +9,7 @@
 import { loadConfig, type Config } from "./config.js";
 import { setLogLevel, log } from "./log.js";
 import { RawEoaSigner } from "./signers/raw-eoa.js";
+import { loadPaymentDelegation } from "./erc7710.js";
 import { AutoTopup } from "./autoTopup.js";
 import { DirectBalance } from "./funds/direct-balance.js";
 import type { Funds } from "./funds.js";
@@ -89,6 +90,11 @@ export async function runBridge(env: NodeJS.ProcessEnv = process.env): Promise<v
     address: signer.address,
     source: isKeychainURI(cfg.DELEGATE_PRIVATE_KEY) ? "keychain" : "env",
   });
+  // ERC-7710: pay from the user's account (no funds on this key) when the wallet granted one.
+  const paymentDelegation = loadPaymentDelegation(cfg.HPP_PAYMENT_DELEGATION, signer.address, cfg.chainId);
+  if (paymentDelegation) {
+    log.info("paymentDelegation.loaded", { delegator: paymentDelegation.delegator, caveats: paymentDelegation.caveatCount, chainId: paymentDelegation.chainId });
+  }
 
   // ---- Funds (wallet mode) --------------------------------------------
   // Safe mode: autoTopup pulls USDC.e from the Safe within the on-chain daily
@@ -130,6 +136,7 @@ export async function runBridge(env: NodeJS.ProcessEnv = process.env): Promise<v
         rpcUrl: cfg.HPP_RPC_URL,
         signer,
         funds,
+        paymentDelegation,
         bridgeName: PKG_NAME,
         bridgeVersion: PKG_VERSION,
       });
@@ -182,6 +189,7 @@ export async function runBridge(env: NodeJS.ProcessEnv = process.env): Promise<v
     signer,
     network: cfg.HPP_NETWORK as Network,
     funds,
+    paymentDelegation,
     rpcUrl: cfg.HPP_RPC_URL,
     discovery,
     seller,
