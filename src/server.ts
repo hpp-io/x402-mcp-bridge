@@ -19,6 +19,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import type { UpstreamClient } from "./client.js";
+import type { PaymentDelegation } from "./erc7710.js";
 import { PAY_A2A_TOOL, payA2aAgent, type PayA2aArgs } from "./a2a.js";
 import { X402_HTTP_TOOL, x402HttpCall, type X402HttpArgs } from "./httpX402.js";
 import {
@@ -97,6 +98,8 @@ export interface BridgeServerOptions {
   signer: RawEoaSigner;
   network: Network;
   funds?: Funds;
+  /** ERC-7710 delegation (pay from the user's account); undefined = pay with this key's USDC.e. */
+  paymentDelegation?: PaymentDelegation;
   /** Chain RPC — enables the upto scheme in hpp_call / x402_http_call. */
   rpcUrl?: string;
   /** Curated-discovery client. Present = register hpp_discover / hpp_call. */
@@ -235,7 +238,7 @@ export async function startBridgeServer(opts: BridgeServerOptions): Promise<void
       try {
         return await payA2aAgent(
           {
-            signer: opts.signer,
+            signer: opts.signer, paymentDelegation: opts.paymentDelegation,
             network: opts.network,
             funds: opts.funds,
             rpcTimeoutMs: opts.a2aRpcTimeoutMs,
@@ -256,7 +259,7 @@ export async function startBridgeServer(opts: BridgeServerOptions): Promise<void
       try {
         return await x402HttpCall(
           {
-            signer: opts.signer,
+            signer: opts.signer, paymentDelegation: opts.paymentDelegation,
             network: opts.network,
             funds: opts.funds,
             rpcUrl: opts.rpcUrl,
@@ -302,7 +305,7 @@ export async function startBridgeServer(opts: BridgeServerOptions): Promise<void
     if (opts.discovery && name === HPP_CALL_TOOL.name) {
       try {
         return await hppCall(
-          { signer: opts.signer, network: opts.network, funds: opts.funds, rpcUrl: opts.rpcUrl },
+          { signer: opts.signer, paymentDelegation: opts.paymentDelegation, network: opts.network, funds: opts.funds, rpcUrl: opts.rpcUrl },
           opts.discovery,
           (args ?? {}) as unknown as HppCallArgs,
         );

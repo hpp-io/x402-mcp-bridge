@@ -87,6 +87,7 @@ your keys.
 | `HPP_NETWORK` | `eip155:181228` Sepolia (default) / `eip155:190415` Mainnet |
 | `RESOURCE_SERVER_URL` | proxy one upstream MCP server (omit = local tools only) |
 | `SAFE_ADDRESS` + `ALLOWANCE_MODULE_ADDRESS` | set both = Safe (governance) mode |
+| `HPP_PAYMENT_DELEGATION` | ERC-7710 payment delegation a wallet granted to this key: pays `erc7710` accepts from the **user's smart account** under on-chain caps — this key needs no USDC.e. Validated at boot; without it such accepts are skipped |
 
 Full environment reference + Safe/governance setup are in the
 [manual](https://github.com/hpp-io/x402-tools).

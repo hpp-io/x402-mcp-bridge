@@ -17,7 +17,7 @@
  * against the published skill list, surface card metadata in errors.
  */
 import { x402Client } from "@x402/core/client";
-import { ExactEvmScheme } from "@x402/evm/exact/client";
+import { makeExactClient, needsOwnFunds, orderAccepts, type PaymentDelegation } from "./erc7710.js";
 import type { Network } from "@x402/core/types";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
@@ -31,6 +31,8 @@ export interface A2aPayerDeps {
   network: Network;
   /** Optional: ensure the delegate holds enough USDC.e before paying. */
   funds?: Funds;
+  /** ERC-7710 delegation: pay `erc7710` accepts from the user's account (no funds needed here). */
+  paymentDelegation?: PaymentDelegation;
   /**
    * Optional atomic-units price ceiling. When set (e.g. the discovery-listed
    * price on the hpp_call path), refuse to sign if the agent's gate demands
@@ -61,12 +63,11 @@ export interface A2aPayerDeps {
 export function pickExactAccept(
   required: { accepts?: ReadonlyArray<Record<string, unknown>> },
   network: Network,
+  opts: { delegation?: boolean } = {},
 ): Record<string, unknown> | null {
-  const accepts = required.accepts ?? [];
-  for (const a of accepts) {
-    if (a.scheme === "exact" && a.network === network) return a;
-  }
-  return null;
+  const accepts = (required.accepts ?? []).filter((a) => a.scheme === "exact" && a.network === network);
+  // erc7710 accepts are payable only with a delegation, and then preferred (this key may hold nothing).
+  return orderAccepts(accepts, Boolean(opts.delegation))[0] ?? null;
 }
 
 export const PAY_A2A_TOOL = {
@@ -205,7 +206,7 @@ export async function payA2aAgent(
   // would otherwise re-pick based on registered schemes and the topup
   // amount could end up funding a different `accepts[i].amount` than the
   // one actually signed. See pickExactAccept docstring.
-  const accept = pickExactAccept(required, deps.network);
+  const accept = pickExactAccept(required, deps.network, { delegation: Boolean(deps.paymentDelegation) });
   if (!accept) {
     return errorResult(
       `A2A agent advertised no "exact" accept for network ${deps.network} ` +
@@ -250,7 +251,7 @@ export async function payA2aAgent(
   try {
     // 2b. Spend-cap: ensure the delegate holds enough USDC.e (Safe autoTopup or
     //     light-mode balance check). Skipped when no funds source is wired.
-    if (deps.funds) {
+    if (deps.funds && needsOwnFunds(accept)) {
       try {
         await deps.funds.ensure(requiredAtomic);
       } catch (err) {
@@ -265,7 +266,7 @@ export async function payA2aAgent(
     try {
       const client = new x402Client().register(
         deps.network,
-        new ExactEvmScheme(deps.signer.viemAccount),
+        makeExactClient(deps.signer.viemAccount, deps.paymentDelegation),
       );
       payload = await client.createPaymentPayload(narrowedRequired);
     } catch (err) {

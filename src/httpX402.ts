@@ -21,7 +21,7 @@
  * body}` come from the host/LLM. Identity is the X-Api-Key injected locally.
  */
 import { x402Client, x402HTTPClient } from "@x402/core/client";
-import { ExactEvmScheme } from "@x402/evm/exact/client";
+import { makeExactClient, needsOwnFunds, orderAccepts, type PaymentDelegation } from "./erc7710.js";
 import { UptoEvmScheme } from "@x402/evm/upto/client";
 import type { Network } from "@x402/core/types";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -46,6 +46,8 @@ export interface HttpX402Deps {
   network: Network;
   /** Ensure the delegate holds enough USDC.e before paying. */
   funds?: Funds;
+  /** ERC-7710 delegation: pay `erc7710` accepts from the user's account (no funds needed here). */
+  paymentDelegation?: PaymentDelegation;
   /**
    * Set by hpp_call for curated-discovery resources: skip the manual host
    * allowlist + local credential injection (discovery is the trust boundary).
@@ -75,11 +77,12 @@ export interface HttpX402Deps {
 function pickPayableAccept(
   required: { accepts?: ReadonlyArray<Record<string, unknown>> },
   network: Network,
-  opts: { upto: boolean; prefer?: "exact" | "upto" },
+  opts: { upto: boolean; prefer?: "exact" | "upto"; delegation?: boolean },
 ): Record<string, unknown> | null {
   const supported = new Set<string>(["exact", ...(opts.upto ? ["upto"] : [])]);
-  const eligible = (required.accepts ?? []).filter(
-    (a) => a.network === network && supported.has(a.scheme as string),
+  const eligible = orderAccepts(
+    (required.accepts ?? []).filter((a) => a.network === network && supported.has(a.scheme as string)),
+    Boolean(opts.delegation),
   );
   if (eligible.length === 0) return null;
   // An explicit buyer force (--scheme) must be honored exactly — if the seller
@@ -262,7 +265,7 @@ export async function x402HttpCall(
     // the gasless Permit2 approval). Registering both lets a seller advertise
     // either — the accept picker (below) honors the seller's order.
     const useUpto = Boolean(deps.rpcUrl);
-    const client = new x402Client().register(deps.network, new ExactEvmScheme(deps.signer.viemAccount));
+    const client = new x402Client().register(deps.network, makeExactClient(deps.signer.viemAccount, deps.paymentDelegation));
     if (useUpto) {
       client.register(deps.network, new UptoEvmScheme(deps.signer.viemAccount, { rpcUrl: deps.rpcUrl! }));
     }
@@ -292,6 +295,7 @@ export async function x402HttpCall(
     const accept = pickPayableAccept(required, deps.network, {
       upto: useUpto,
       prefer: deps.preferScheme,
+      delegation: Boolean(deps.paymentDelegation),
     });
     if (!accept) {
       const forced = deps.preferScheme ? `--scheme ${deps.preferScheme} ` : "";
@@ -319,7 +323,7 @@ export async function x402HttpCall(
     try {
       // Ensure the delegate holds enough USDC.e (Safe autoTopup within the
       // on-chain cap, or a light-mode balance check — same gate either way).
-      if (deps.funds) {
+      if (deps.funds && needsOwnFunds(accept)) {
         try {
           await deps.funds.ensure(amount);
         } catch (err) {

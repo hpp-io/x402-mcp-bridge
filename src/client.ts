@@ -12,7 +12,7 @@ import { resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { wrapMCPClientWithPaymentFromConfig } from "@x402/mcp";
-import { ExactEvmScheme } from "@x402/evm/exact/client";
+import { makeExactClient, needsOwnFunds, orderAccepts, type PaymentDelegation } from "./erc7710.js";
 import { UptoEvmScheme } from "@x402/evm/upto/client";
 import {
   BatchSettlementEvmScheme,
@@ -75,6 +75,8 @@ export interface UpstreamOptions {
   rpcUrl: string;
   signer: RawEoaSigner; // PoC: RawEoaSigner only; widens with future signers
   funds: Funds;
+  /** ERC-7710 delegation: pay `erc7710` accepts from the user's account (this key holds nothing). */
+  paymentDelegation?: PaymentDelegation;
   bridgeName: string;
   bridgeVersion: string;
 }
@@ -115,7 +117,7 @@ export async function connectUpstream(opts: UpstreamOptions): Promise<UpstreamCl
         },
         {
           network: opts.network,
-          client: new ExactEvmScheme(opts.signer.viemAccount),
+          client: makeExactClient(opts.signer.viemAccount, opts.paymentDelegation),
         },
         {
           // upto (usage-based) — selected when the service advertises it first
@@ -138,7 +140,9 @@ export async function connectUpstream(opts: UpstreamOptions): Promise<UpstreamCl
         // batch/exact gets those. `HPP_X402_PREFER_EXACT=true` is a demo-only
         // override (forces exact, e.g. to show wallet balance deltas live).
         const supported = new Set(["exact", "batch-settlement", "upto"]);
-        let picked = accepts.find((a) => supported.has(a.scheme)) ?? accepts[0];
+        // erc7710 accepts: only payable with a delegation, and then preferred (this key may hold nothing).
+        const ordered = orderAccepts(accepts, Boolean(opts.paymentDelegation));
+        let picked = ordered.find((a) => supported.has(a.scheme)) ?? ordered[0] ?? accepts[0];
         if (process.env.HPP_X402_PREFER_EXACT === "true") {
           picked = accepts.find((a) => a.scheme === "exact") ?? picked;
         }
@@ -165,12 +169,19 @@ export async function connectUpstream(opts: UpstreamOptions): Promise<UpstreamCl
         // pick THIS bridge's network so the topup amount + log match the accept the
         // selector will actually settle (the SDK filters accepts by registered
         // network). Falling back to accepts[0] keeps single-network servers working.
-        const accept =
-          paymentRequired.accepts?.find((a) => a.network === opts.network) ??
-          paymentRequired.accepts?.[0];
+        const onNetwork = orderAccepts(
+          (paymentRequired.accepts ?? []).filter((a) => a.network === opts.network),
+          Boolean(opts.paymentDelegation),
+        );
+        const accept = onNetwork[0] ?? paymentRequired.accepts?.[0];
         if (!accept) return false;
 
         const requiredAtomic = BigInt((accept as { amount?: string }).amount ?? "0");
+        if (!needsOwnFunds(accept)) {
+          // Paid from the user's account via the delegation — nothing to top up on this key.
+          log.info("payment.delegated", { amount: requiredAtomic.toString(), payTo: (accept as { payTo?: string }).payTo });
+          return true;
+        }
         log.info("payment.requested", {
           amount: requiredAtomic.toString(),
           asset: (accept as { asset?: string }).asset,
