@@ -5,6 +5,8 @@ import type { DiscoveryClient } from "./discovery.js";
 
 // Only hppCall touches the HTTP payment path, and these tests are about what
 // hppCall does with its result — not about paying.
+vi.mock("./mcpCall.js", () => ({ payMcpTool: vi.fn(async () => ({ content: [{ type: "text", text: "{}" }], isError: false })) }));
+vi.mock("./a2a.js", () => ({ payA2aAgent: vi.fn(async () => ({ content: [{ type: "text", text: "{}" }], isError: false })) }));
 vi.mock("./httpX402.js", () => ({
   x402HttpCall: vi.fn(async () => ({
     content: [{ type: "text", text: '{"status":400,"body":{"error":"invalid_input"}}' }],
@@ -309,5 +311,25 @@ describe("mcp input contract", () => {
       }) as never,
     );
     expect(String(out.input)).toContain("not declared");
+  });
+});
+
+// hpp_call must hand the ERC-7710 delegation to every transport it dispatches to —
+// the 0.1.19 regression dropped it on the mcp/a2a paths, so a Cursor `hpp_call` to
+// an mcp-listed service silently fell back to paying from the bridge key.
+describe("hpp_call forwards the payment delegation to mcp and a2a transports", () => {
+  it("passes paymentDelegation into payMcpTool / payA2aAgent deps", async () => {
+    const { payMcpTool } = await import("./mcpCall.js");
+    const { payA2aAgent } = await import("./a2a.js");
+    const delegation = { chainId: 190415, delegator: "0x" + "b".repeat(40), permissionContext: "0xdead", caveatCount: 2 };
+    const deps = { signer: { address: "0x" + "9".repeat(40) }, network: "eip155:190415", paymentDelegation: delegation } as never;
+    const mcpClient = fakeClient({ detail: vi.fn(async () => ({ ...DETAIL, type: "mcp", toolName: "compute_screen", mcpServerUrl: "https://seller.example/mcp" })) });
+    await hppCall(deps, mcpClient, { resourceId: "r1", body: {} });
+    expect(payMcpTool).toHaveBeenCalledTimes(1);
+    expect((vi.mocked(payMcpTool).mock.calls[0] as unknown as [{ paymentDelegation?: unknown }])[0].paymentDelegation).toEqual(delegation);
+    const a2aClient = fakeClient({ detail: vi.fn(async () => ({ ...DETAIL, type: "a2a", skillId: "screen" })) });
+    await hppCall(deps, a2aClient, { resourceId: "r1", body: {} });
+    expect(payA2aAgent).toHaveBeenCalledTimes(1);
+    expect((vi.mocked(payA2aAgent).mock.calls[0] as unknown as [{ paymentDelegation?: unknown }])[0].paymentDelegation).toEqual(delegation);
   });
 });

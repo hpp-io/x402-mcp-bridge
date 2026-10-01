@@ -342,6 +342,7 @@ export async function hppCall(
         signer: deps.signer,
         network: deps.network,
         funds: deps.funds,
+        paymentDelegation: deps.paymentDelegation, // erc7710: pay from the user's account, not this key
         // Curated price is the ceiling: refuse if the agent's gate demands more
         // than discovery advertised (defends the "trusted price" of hpp_call).
         maxAmountAtomic: detail.priceAtomic,
@@ -363,6 +364,7 @@ export async function hppCall(
         signer: deps.signer,
         network: deps.network,
         funds: deps.funds,
+        paymentDelegation: deps.paymentDelegation, // erc7710: pay from the user's account, not this key
         rpcUrl: deps.rpcUrl,
         preferScheme: deps.preferScheme,
         maxAmountAtomic: detail.priceAtomic,
