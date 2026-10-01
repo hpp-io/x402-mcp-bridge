@@ -164,12 +164,30 @@ async function toToolResult(res: Response): Promise<CallToolResult> {
   // local files and replaced with `$spooled` descriptors — the model should
   // never carry media payloads through its context.
   if (res.ok) parsed = spoolValue(parsed, "x402_http_call");
+  // A seller rejects a payment with 402 + `PAYMENT-REQUIRED` carrying the
+  // facilitator's reason (e.g. erc7710_simulation_failed: CannotUseADisabledDelegation,
+  // insufficient_payer_balance). The body is usually `{}`, so without this the
+  // model guesses at input schemas instead of reporting the real cause.
+  const paymentError = res.status === 402 ? paymentRequiredError(res.headers.get("payment-required")) : undefined;
   return {
     content: [
-      { type: "text", text: JSON.stringify({ status: res.status, ok: res.ok, body: parsed }) },
+      { type: "text", text: JSON.stringify({ status: res.status, ok: res.ok, body: parsed, ...(paymentError ? { paymentError } : {}) }) },
     ],
     isError: !res.ok,
   };
+}
+
+/** Decode the `error` a seller put in its base64 `PAYMENT-REQUIRED` header, if any. */
+export function paymentRequiredError(header: string | null | undefined): string | undefined {
+  if (!header) return undefined;
+  try {
+    const j = JSON.parse(Buffer.from(header, "base64").toString("utf8")) as { error?: unknown; errorMessage?: unknown };
+    const e = typeof j.error === "string" ? j.error : undefined;
+    const m = typeof j.errorMessage === "string" ? j.errorMessage : undefined;
+    return e && m ? `${e}: ${m}` : e ?? m;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function x402HttpCall(

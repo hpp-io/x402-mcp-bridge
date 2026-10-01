@@ -290,6 +290,16 @@ export async function payMcpTool(
           `at ${args.serverUrl} — the service prices in a network/scheme this wallet can't settle`,
       );
     }
+    // The seller refused the payment: the SDK rethrows the server's payment-required
+    // error with the 402 payload as `data`, whose `error` is the facilitator's reason
+    // (e.g. erc7710_simulation_failed: CannotUseADisabledDelegation,
+    // insufficient_payer_balance). Nothing settled → clean failure, and say why, or
+    // the model guesses at input schemas instead of reporting the real cause.
+    const data = (err as { data?: { error?: unknown; errorMessage?: unknown } }).data;
+    if (data && typeof data.error === "string") {
+      const detail = typeof data.errorMessage === "string" ? `: ${data.errorMessage}` : "";
+      return errorResult(`payment rejected by the seller — ${data.error}${detail}`);
+    }
     // Otherwise the payment was produced and the call threw mid-flight (timeout /
     // transport). We can't tell whether the settle landed → hold the reservation
     // (issue #12, tier 1) rather than release and risk loosening the cap.
