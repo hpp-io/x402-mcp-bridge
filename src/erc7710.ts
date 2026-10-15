@@ -38,10 +38,21 @@ import { log } from "./log.js";
 export const ERC7710_METHOD = "erc7710";
 export const ANY_DELEGATE: Address = "0x0000000000000000000000000000000000000a11";
 
-/** HPP deployments (CREATE2 salt `hpp-x402-7710-poc`). Mainnet lands with a multisig owner. */
+/** HPP deployments (enforcers: CREATE2 salt `hpp-x402-7710-poc`; DelegationManager owner = Sepolia test key / mainnet AA operations Safe). */
 export const ERC7710_CONTRACTS: Record<number, { delegationManager: Address; enforcers: { ERC20TransferAmountEnforcer: Address; RedeemerEnforcer: Address; AllowedCalldataEnforcer: Address; TimestampEnforcer: Address } }> = {
   181228: {
     delegationManager: "0x20248e5193B1Ef08298812AdA31F4B0D75e99652",
+    enforcers: {
+      ERC20TransferAmountEnforcer: "0x8b76d04EbB53082D258e653ddb49423ce142c546",
+      RedeemerEnforcer: "0x7914D7940E7b6A2F8579FaB1c4c02CB4370700f8",
+      AllowedCalldataEnforcer: "0x31c407faAFbc69868b4d8822B1a761214A04080b",
+      TimestampEnforcer: "0xa5FB0F520984Ece260b9248D4Ae6A2f6350a4850",
+    },
+  },
+  // HPP Mainnet (2026-10-15). Enforcers share the CREATE2 addresses; the DelegationManager differs because its
+  // owner (constructor arg) is the HPP AA operations Safe. Same set the facilitator accepts on eip155:190415.
+  190415: {
+    delegationManager: "0xEf6d2D01af8e6313f9D544DC2AaC6a438590c2A9",
     enforcers: {
       ERC20TransferAmountEnforcer: "0x8b76d04EbB53082D258e653ddb49423ce142c546",
       RedeemerEnforcer: "0x7914D7940E7b6A2F8579FaB1c4c02CB4370700f8",
