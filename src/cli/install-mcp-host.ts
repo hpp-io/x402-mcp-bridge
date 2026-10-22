@@ -30,6 +30,9 @@ export interface InstallEnv {
   RESOURCE_SERVER_URL?: string;
   HPP_RPC_URL: string;
   HPP_NETWORK: string;
+  // ERC-7710 payment delegation a wallet issued to this key (`install --delegation`). Absent
+  // unless given — the bridge then pays from its own key as before.
+  HPP_PAYMENT_DELEGATION?: string;
   LOG_LEVEL?: string;
 }
 
@@ -104,6 +107,7 @@ export function installMcpHost(opts: InstallOptions): InstallResult {
       RESOURCE_SERVER_URL: env.RESOURCE_SERVER_URL,
       HPP_RPC_URL: env.HPP_RPC_URL,
       HPP_NETWORK: env.HPP_NETWORK,
+      HPP_PAYMENT_DELEGATION: env.HPP_PAYMENT_DELEGATION,
       LOG_LEVEL: env.LOG_LEVEL ?? "info",
     },
   };

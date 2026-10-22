@@ -19,11 +19,14 @@ import { ExactEvmScheme } from "@x402/evm/exact/client";
 import type { PaymentPayloadContext, PaymentPayloadResult, PaymentRequirements, SchemeNetworkClient } from "@x402/core/types";
 import {
   concatHex,
+  createPublicClient,
   decodeAbiParameters,
   encodeAbiParameters,
   encodePacked,
   getAddress,
   hashStruct,
+  hashTypedData,
+  http,
   isAddress,
   isHex,
   keccak256,
@@ -105,6 +108,11 @@ const typedMessage = (d: Delegation) => ({ delegate: d.delegate, delegator: d.de
 export function delegationHash(d: Delegation): Hex {
   return hashStruct({ data: typedMessage(d), primaryType: "Delegation", types: DELEGATION_TYPES });
 }
+const delegationDomain = (chainId: number) => ({ name: "DelegationManager", version: "1", chainId, verifyingContract: ERC7710_CONTRACTS[chainId].delegationManager });
+/** The EIP-712 digest the delegator signed — bound to the chain and its DelegationManager. */
+export function delegationDigest(chainId: number, d: Delegation): Hex {
+  return hashTypedData({ domain: delegationDomain(chainId), types: DELEGATION_TYPES, primaryType: "Delegation", message: typedMessage(d) });
+}
 
 // ---- config ---------------------------------------------------------------------------------
 
@@ -141,6 +149,76 @@ export function loadPaymentDelegation(raw: string | undefined, agent: Address, c
   }
   if (!leaf.signature || leaf.signature === "0x") throw new Error("HPP_PAYMENT_DELEGATION is unsigned");
   return { chainId, delegator: getAddress(chain[chain.length - 1].delegator), permissionContext: hex as Hex, caveatCount: leaf.caveats.length };
+}
+
+export const NETWORK_NAMES: Record<number, string> = { 181228: "HPP Sepolia", 190415: "HPP Mainnet" };
+const networkName = (chainId: number) => NETWORK_NAMES[chainId] ?? `chain ${chainId}`;
+
+/** TimestampEnforcer terms: afterThreshold(uint128) ‖ beforeThreshold(uint128); 0 = unbounded. */
+export function decodeTimestampTerms(terms: Hex): { after: bigint; before: bigint } | undefined {
+  if (terms.length !== 2 + 64) return undefined;
+  return { after: BigInt("0x" + terms.slice(2, 34)), before: BigInt("0x" + terms.slice(34, 66)) };
+}
+
+/** What `checkPaymentDelegation` needs from the chain — a viem public client, or a stub in tests. */
+export type DelegationChainReader = {
+  getCode: (args: { address: Address }) => Promise<Hex | undefined>;
+  readContract: (args: { address: Address; abi: readonly unknown[]; functionName: string; args: readonly unknown[] }) => Promise<unknown>;
+};
+
+export type DelegationCheck =
+  | { ok: true; delegator: Address; validUntil?: number }
+  /** `fatal` = the delegation can never work here (wrong network, revoked, expired); otherwise the chain could not be asked. */
+  | { ok: false; fatal: boolean; reason: string };
+
+const ERC1271_MAGIC = "0x1626ba7e";
+const ERC1271_ABI = [{ type: "function", name: "isValidSignature", stateMutability: "view", inputs: [{ name: "hash", type: "bytes32" }, { name: "signature", type: "bytes" }], outputs: [{ name: "", type: "bytes4" }] }] as const;
+const DM_ABI = [{ type: "function", name: "disabledDelegations", stateMutability: "view", inputs: [{ name: "", type: "bytes32" }], outputs: [{ name: "", type: "bool" }] }] as const;
+
+/**
+ * Ask the chain whether the delegation is usable on `delegation.chainId`: the signer (the user's
+ * smart account) must exist there and accept the signature, and the DelegationManager must not
+ * have it disabled. The signature covers the chain id and the DelegationManager address, so this
+ * is also what tells a delegation issued on the other network apart — the enforcer addresses
+ * are the same on both. Expiry comes from the TimestampEnforcer caveat and needs no RPC.
+ */
+export async function checkPaymentDelegation(delegation: PaymentDelegation, opts: { rpcUrl?: string; client?: DelegationChainReader; now?: number }): Promise<DelegationCheck> {
+  const { chainId, delegator } = delegation;
+  const contracts = ERC7710_CONTRACTS[chainId];
+  const chain = decodeDelegations(delegation.permissionContext);
+  const root = chain[chain.length - 1];
+  const name = networkName(chainId);
+  let validUntil: number | undefined;
+  for (const c of root.caveats) {
+    if (c.enforcer.toLowerCase() !== contracts.enforcers.TimestampEnforcer.toLowerCase()) continue;
+    const t = decodeTimestampTerms(c.terms);
+    if (t && t.before > 0n) validUntil = Number(t.before);
+  }
+  const now = opts.now ?? Math.floor(Date.now() / 1000);
+  if (validUntil !== undefined && validUntil <= now) {
+    return { ok: false, fatal: true, reason: `the delegation expired on ${new Date(validUntil * 1000).toISOString()} — issue a new one in the wallet` };
+  }
+  const client: DelegationChainReader = opts.client ?? (createPublicClient({ transport: http(opts.rpcUrl, { timeout: 8_000 }) }) as unknown as DelegationChainReader);
+  try {
+    const code = await client.getCode({ address: delegator });
+    if (!code || code === "0x") {
+      return { ok: false, fatal: true, reason: `the paying account ${delegator} is not set up on ${name} — this delegation was most likely issued by the wallet on the other network (HPP Sepolia ↔ HPP Mainnet); re-run with the matching -n, or issue one from the ${name} wallet` };
+    }
+    const disabled = (await client.readContract({ address: contracts.delegationManager, abi: DM_ABI, functionName: "disabledDelegations", args: [delegationHash(root)] })) as boolean;
+    if (disabled) return { ok: false, fatal: true, reason: "the delegation was revoked in the wallet — issue a new one" };
+    let magic: string | undefined;
+    try {
+      magic = (await client.readContract({ address: delegator, abi: ERC1271_ABI, functionName: "isValidSignature", args: [delegationDigest(chainId, root), root.signature] })) as string;
+    } catch {
+      magic = undefined; // Kernel reverts on a bad root signature instead of returning a non-magic value
+    }
+    if (magic?.toLowerCase() !== ERC1271_MAGIC) {
+      return { ok: false, fatal: true, reason: `the paying account ${delegator} on ${name} does not accept this delegation's signature — it was issued for a different network or account` };
+    }
+    return { ok: true, delegator, validUntil };
+  } catch (err) {
+    return { ok: false, fatal: false, reason: `could not verify the delegation on ${name}: ${(err as Error).message.split("\n")[0]}` };
+  }
 }
 
 // ---- accept selection -------------------------------------------------------------------------

@@ -47,6 +47,24 @@ hpp-x402 describe <id>                             # input args (schema + exampl
 hpp-x402 call <url-or-id> --body '{"hi":"there"}'  # pay + call — a URL, or an id from discover
 ```
 
+### Pay from your HPP Smart Wallet instead
+
+Rather than funding the agent's key, let it pay from your
+[HPP Smart Wallet](https://docs.hpp.io/smart-accounts/pay-from-an-agent) under a
+spending limit you set. In the wallet, open **Agents → New**, paste the agent's
+address (`hpp-x402 wallet address`), issue the delegation, then run the command
+the wallet shows — it is this, with the value filled in:
+
+```bash
+hpp-x402 install claude-code -n eip155:190415 --delegation 0x…
+```
+
+Run it on the machine where the agent's key lives. The value is checked against
+that key and the network before it is written, and again each time the bridge
+starts. The value can only be used by that key, within the limit, until it
+expires — but it does end up in your shell history, so treat it like a card with
+a cap. To stop the agent, revoke the delegation in the wallet.
+
 Full command reference, selling (`serve`), schemes, and Safe mode →
 the **[manual](https://github.com/hpp-io/x402-tools)**.
 
@@ -87,7 +105,7 @@ your keys.
 | `HPP_NETWORK` | `eip155:181228` Sepolia (default) / `eip155:190415` Mainnet |
 | `RESOURCE_SERVER_URL` | proxy one upstream MCP server (omit = local tools only) |
 | `SAFE_ADDRESS` + `ALLOWANCE_MODULE_ADDRESS` | set both = Safe (governance) mode |
-| `HPP_PAYMENT_DELEGATION` | ERC-7710 payment delegation a wallet granted to this key: pays `erc7710` accepts from the **user's smart account** under on-chain caps — this key needs no USDC.e. Validated at boot; without it such accepts are skipped |
+| `HPP_PAYMENT_DELEGATION` | ERC-7710 payment delegation a wallet granted to this key: pays `erc7710` accepts from the **user's smart account** under on-chain caps — this key needs no USDC.e. `hpp-x402 install <host> --delegation <value>` writes it. Checked against the key and the network at install and at boot (a value issued on the other network, revoked, or expired stops the bridge with the reason); without it such accepts are skipped |
 
 Full environment reference + Safe/governance setup are in the
 [manual](https://github.com/hpp-io/x402-tools).

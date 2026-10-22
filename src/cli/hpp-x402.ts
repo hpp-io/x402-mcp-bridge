@@ -38,6 +38,7 @@ import { installCursor } from "./install-cursor.js";
 import { installWindsurf } from "./install-windsurf.js";
 import { installClaudeCode, type ClaudeCodeInstallResult } from "./install-claude-code.js";
 import type { InstallEnv, InstallResult } from "./install-mcp-host.js";
+import { checkPaymentDelegation, loadPaymentDelegation } from "../erc7710.js";
 
 const NETWORKS: Record<
   string,
@@ -95,7 +96,7 @@ async function usdcBalance(address: Address, netId: string): Promise<string> {
   })) as bigint;
   return formatUnits(bal, 6);
 }
-function lightEnv(account: string, netId: string, resourceServerUrl?: string): InstallEnv {
+function lightEnv(account: string, netId: string, resourceServerUrl?: string, delegation?: string): InstallEnv {
   const n = net(netId);
   return {
     DELEGATE_PRIVATE_KEY: buildKeychainURI(account),
@@ -104,8 +105,31 @@ function lightEnv(account: string, netId: string, resourceServerUrl?: string): I
     ...(resourceServerUrl ? { RESOURCE_SERVER_URL: resourceServerUrl } : {}),
     HPP_RPC_URL: n.rpc,
     HPP_NETWORK: netId,
+    ...(delegation ? { HPP_PAYMENT_DELEGATION: delegation } : {}),
     LOG_LEVEL: "info",
   };
+}
+
+/**
+ * `--delegation`: the value the wallet shows after issuing a payment delegation. Check it
+ * against this key and this network BEFORE writing it into a host config, so a mismatch is a
+ * one-line error now rather than a refused payment later. Returns the value to install.
+ */
+async function prepareDelegation(raw: string, address: Address, netId: string): Promise<string> {
+  const n = net(netId);
+  let parsed;
+  try {
+    parsed = loadPaymentDelegation(raw, address, n.chainId);
+  } catch (err) {
+    const m = (err as Error).message;
+    throw new Error(m.includes("this bridge's key") ? `${m}. If the wallet issued it to a key stored under another keychain account, pass -a <name>` : m);
+  }
+  if (!parsed) throw new Error("--delegation is empty");
+  const check = await checkPaymentDelegation(parsed, { rpcUrl: n.rpc });
+  if (!check.ok && check.fatal) throw new Error(`the delegation cannot be used: ${check.reason}`);
+  if (!check.ok) console.error(`⚠ ${check.reason} — installing anyway; the bridge checks again when it starts`);
+  else console.log(`delegation: OK — pays from ${check.delegator} on ${n.name}${check.validUntil ? ` until ${new Date(check.validUntil * 1000).toISOString().slice(0, 10)}` : ""}`);
+  return parsed.permissionContext;
 }
 
 const acct = ["-a, --account <name>", "keychain account", "delegate-default"] as const;
@@ -159,20 +183,27 @@ program
   .option("--delegate-pk <key>", "import an existing 0x key instead of generating one")
   .option("--print-key", "emit the raw key instead of a keychain URI (dev only)")
   .option("--install <host>", `also register into an MCP host (${Object.keys(HOSTS).join("|")})`)
+  .option("--delegation <hex>", "HPP_PAYMENT_DELEGATION a wallet issued to this key (needs --delegate-pk; otherwise run setup first, then `install <host> --delegation`)")
   .action(
-    (o: {
+    async (o: {
       account: string;
       network: string;
       resourceServerUrl?: string;
       delegatePk?: string;
       printKey?: boolean;
       install?: string;
+      delegation?: string;
     }) => {
       const n = net(o.network);
       let key = o.delegatePk as Hex | undefined;
       const generated = !key;
+      // A delegation is bound to one key. setup makes a fresh key, so the value could never match it.
+      if (o.delegation && generated) {
+        throw new Error("--delegation needs the key it was issued to: run `hpp-x402 setup` first, issue the delegation in the wallet to the printed address, then `hpp-x402 install <host> --delegation <value>`");
+      }
       if (!key) key = generatePrivateKey();
       const address = privateKeyToAccount(key).address;
+      const delegation = o.delegation ? await prepareDelegation(o.delegation, address, o.network) : undefined;
 
       let ref: string;
       if (o.printKey) {
@@ -196,6 +227,7 @@ program
         ...(o.resourceServerUrl ? { RESOURCE_SERVER_URL: o.resourceServerUrl } : {}),
         HPP_RPC_URL: n.rpc,
         HPP_NETWORK: o.network,
+        ...(delegation ? { HPP_PAYMENT_DELEGATION: delegation } : {}),
         LOG_LEVEL: "info",
       };
 
@@ -270,10 +302,12 @@ program
   .option(...acct)
   .option("-n, --network <id>", "network", DEFAULT_NETWORK)
   .option("--resource-server-url <url>", "optional upstream x402 MCP resource server")
-  .action((host: string, o: { account: string; network: string; resourceServerUrl?: string }) => {
+  .option("--delegation <hex>", "HPP_PAYMENT_DELEGATION a wallet issued to this key — checked against the key and network, then written into the host config")
+  .action(async (host: string, o: { account: string; network: string; resourceServerUrl?: string; delegation?: string }) => {
     const fn = HOSTS[host];
     if (!fn) throw new Error(`unknown host "${host}" (${Object.keys(HOSTS).join("|")})`);
-    const r = fn(lightEnv(o.account, o.network, o.resourceServerUrl));
+    const delegation = o.delegation ? await prepareDelegation(o.delegation, addressFor(o.account), o.network) : undefined;
+    const r = fn(lightEnv(o.account, o.network, o.resourceServerUrl, delegation));
     printInstallResult(host, r);
   });
 
@@ -466,7 +500,8 @@ program
   .option(...acct)
   .option("-n, --network <id>", "network", DEFAULT_NETWORK)
   .option("--resource-server-url <url>", "optional upstream x402 MCP resource server")
-  .action(async (o: { account: string; network: string; resourceServerUrl?: string }) => {
+  .option("--delegation <hex>", "check an HPP_PAYMENT_DELEGATION value against this key and network")
+  .action(async (o: { account: string; network: string; resourceServerUrl?: string; delegation?: string }) => {
     const n = net(o.network);
     console.log(`network : ${n.name} (${o.network})`);
     let addr: Address;
@@ -481,6 +516,14 @@ program
       console.log(`balance : ${await usdcBalance(addr, o.network)} USDC.e`);
     } catch {
       console.log(`balance : (read failed)`);
+    }
+    if (o.delegation) {
+      try {
+        await prepareDelegation(o.delegation, addr, o.network);
+      } catch (err) {
+        console.log(`delegation: ✗ ${(err as Error).message}`);
+        process.exitCode = 1;
+      }
     }
     // No upstream configured is the normal case for a buyer, so don't print a
     // scary "unreachable" line about a server nobody asked for.
