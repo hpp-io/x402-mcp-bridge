@@ -6,11 +6,15 @@ import {
   ANY_DELEGATE,
   ERC7710_CONTRACTS,
   Erc7710ExactClient,
+  checkPaymentDelegation,
   decodeDelegations,
+  decodeTimestampTerms,
+  delegationDigest,
   delegationHash,
   encodeDelegations,
   isErc7710Accept,
   loadPaymentDelegation,
+  type DelegationChainReader,
   needsOwnFunds,
   orderAccepts,
   type Delegation,
@@ -74,6 +78,52 @@ describe("loadPaymentDelegation", () => {
     expect(() => loadPaymentDelegation("nope", agent.address, 181228)).toThrow(/hex permissionContext/);
     expect(() => loadPaymentDelegation(ctx(), agent.address, 1)).toThrow(/not deployed on chain 1/);
     expect(() => loadPaymentDelegation(encodeAbiParameters([{ type: "tuple[]", components: [{ name: "a", type: "uint256" }] }], [[]]), agent.address, 181228)).toThrow(/no delegations/);
+  });
+});
+
+describe("checkPaymentDelegation", () => {
+  const MAGIC = "0x1626ba7e";
+  const NOW = 1_800_000_000;
+  const withExpiry = (before: bigint): Delegation => ({ ...root(), caveats: [...root().caveats, { enforcer: enforcers.TimestampEnforcer, terms: ("0x" + "0".repeat(32) + before.toString(16).padStart(32, "0")) as Hex, args: "0x" }] });
+  // Stub chain: what the delegator's code is, whether the DM disabled the hash, what isValidSignature returns.
+  const reader = (o: { code?: Hex; disabled?: boolean; magic?: string | Error; fail?: Error }): DelegationChainReader => ({
+    getCode: async () => { if (o.fail) throw o.fail; return o.code ?? "0xef0100abcdef"; },
+    readContract: async ({ functionName }) => {
+      if (functionName === "disabledDelegations") return o.disabled ?? false;
+      if (o.magic instanceof Error) throw o.magic;
+      return o.magic ?? MAGIC;
+    },
+  });
+  const load = (d = root()) => loadPaymentDelegation(ctx(d), agent.address, 181228)!;
+
+  it("decodes TimestampEnforcer terms", () => {
+    expect(decodeTimestampTerms(("0x" + "0".repeat(32) + "0".repeat(24) + "6b49d200") as Hex)).toEqual({ after: 0n, before: 0x6b49d200n });
+    expect(decodeTimestampTerms("0x01")).toBeUndefined();
+  });
+  it("binds the digest to the chain and its DelegationManager", () => {
+    expect(delegationDigest(181228, root())).not.toBe(delegationDigest(190415, root()));
+  });
+  it("passes a live delegation and reports its expiry", async () => {
+    const r = await checkPaymentDelegation(load(withExpiry(BigInt(NOW + 86400))), { client: reader({}), now: NOW });
+    expect(r).toEqual({ ok: true, delegator: USER, validUntil: NOW + 86400 });
+  });
+  it("is fatal when the paying account has no code on this network (issued on the other one)", async () => {
+    const r = await checkPaymentDelegation(load(), { client: reader({ code: "0x" }), now: NOW });
+    expect(r).toMatchObject({ ok: false, fatal: true });
+    expect((r as { reason: string }).reason).toMatch(/not set up on HPP Sepolia.*other network/);
+  });
+  it("is fatal when the account rejects the signature (returns non-magic or reverts)", async () => {
+    expect(await checkPaymentDelegation(load(), { client: reader({ magic: "0xffffffff" }), now: NOW })).toMatchObject({ ok: false, fatal: true, reason: expect.stringMatching(/does not accept this delegation's signature/) });
+    expect(await checkPaymentDelegation(load(), { client: reader({ magic: new Error("InvalidSignature()") }), now: NOW })).toMatchObject({ ok: false, fatal: true });
+  });
+  it("is fatal when revoked or expired — expiry needs no RPC", async () => {
+    expect(await checkPaymentDelegation(load(), { client: reader({ disabled: true }), now: NOW })).toMatchObject({ ok: false, fatal: true, reason: expect.stringMatching(/revoked/) });
+    const boom = new Error("no rpc");
+    expect(await checkPaymentDelegation(load(withExpiry(BigInt(NOW - 1))), { client: reader({ fail: boom }), now: NOW })).toMatchObject({ ok: false, fatal: true, reason: expect.stringMatching(/expired on 2027/) });
+  });
+  it("is non-fatal when the chain cannot be reached", async () => {
+    const r = await checkPaymentDelegation(load(), { client: reader({ fail: new Error("fetch failed\nstack") }), now: NOW });
+    expect(r).toEqual({ ok: false, fatal: false, reason: "could not verify the delegation on HPP Sepolia: fetch failed" });
   });
 });
 

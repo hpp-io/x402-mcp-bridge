@@ -9,7 +9,7 @@
 import { loadConfig, type Config } from "./config.js";
 import { setLogLevel, log } from "./log.js";
 import { RawEoaSigner } from "./signers/raw-eoa.js";
-import { loadPaymentDelegation } from "./erc7710.js";
+import { checkPaymentDelegation, loadPaymentDelegation } from "./erc7710.js";
 import { AutoTopup } from "./autoTopup.js";
 import { DirectBalance } from "./funds/direct-balance.js";
 import type { Funds } from "./funds.js";
@@ -93,7 +93,18 @@ export async function runBridge(env: NodeJS.ProcessEnv = process.env): Promise<v
   // ERC-7710: pay from the user's account (no funds on this key) when the wallet granted one.
   const paymentDelegation = loadPaymentDelegation(cfg.HPP_PAYMENT_DELEGATION, signer.address, cfg.chainId);
   if (paymentDelegation) {
-    log.info("paymentDelegation.loaded", { delegator: paymentDelegation.delegator, caveats: paymentDelegation.caveatCount, chainId: paymentDelegation.chainId });
+    // The value parses, but only the chain can say whether it works HERE: a delegation the wallet
+    // issued on the other network looks identical offline and would fail on the first payment.
+    const check = await checkPaymentDelegation(paymentDelegation, { rpcUrl: cfg.HPP_RPC_URL });
+    if (!check.ok && check.fatal) throw new Error(`HPP_PAYMENT_DELEGATION cannot be used: ${check.reason}`);
+    if (!check.ok) log.error("paymentDelegation.unverified", { reason: check.reason });
+    log.info("paymentDelegation.loaded", {
+      delegator: paymentDelegation.delegator,
+      caveats: paymentDelegation.caveatCount,
+      chainId: paymentDelegation.chainId,
+      validUntil: check.ok && check.validUntil ? new Date(check.validUntil * 1000).toISOString() : undefined,
+      verified: check.ok,
+    });
   }
 
   // ---- Funds (wallet mode) --------------------------------------------
