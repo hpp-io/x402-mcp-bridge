@@ -27,6 +27,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { wrapMCPClientWithPaymentFromConfig } from "@x402/mcp";
 import { makeExactClient, needsOwnFunds, orderAccepts, type PaymentDelegation } from "./erc7710.js";
+import { assetRefusal, filterAllowedAssets } from "./assets.js";
 import { UptoEvmScheme } from "@x402/evm/upto/client";
 import type { Network } from "@x402/core/types";
 
@@ -44,6 +45,8 @@ import { log } from "./log.js";
 export interface McpCallDeps {
   signer: RawEoaSigner;
   network: Network;
+  /** Lowercased token addresses we pay in; accepts in any other asset are dropped (config.allowedAssets). */
+  allowedAssets: readonly string[];
   funds?: Funds;
   /** ERC-7710 delegation: pay `erc7710` accepts from the user's account. */
   paymentDelegation?: PaymentDelegation;
@@ -123,8 +126,14 @@ export async function payMcpTool(
       ],
       paymentRequirementsSelector: (_v, accepts) => {
         const supported = new Set<string>(["exact", ...(useUpto ? ["upto"] : [])]);
+        // Asset filter mirrors onPaymentRequested (which already refused when
+        // nothing on our network is in an allowed asset) — keeps the selector
+        // from ever handing the SDK an accept the guard did not see.
         const eligible = orderAccepts(
-          accepts.filter((a) => a.network === deps.network && supported.has(a.scheme)),
+          filterAllowedAssets(
+            accepts.filter((a) => a.network === deps.network && supported.has(a.scheme)),
+            deps.allowedAssets,
+          ),
           Boolean(deps.paymentDelegation),
         );
         // Buyer force wins; otherwise the seller's advertised order.
@@ -155,9 +164,17 @@ export async function payMcpTool(
       autoPayment: true,
       onPaymentRequested: async ({ paymentRequired }) => {
         if (state.refusal) return false;
+        const offered = paymentRequired.accepts ?? [];
+        const asset = assetRefusal(offered, deps.network, deps.allowedAssets);
+        if (asset) {
+          state.refusal = `blocked: ${asset}`;
+          return false;
+        }
         const accept =
-          orderAccepts((paymentRequired.accepts ?? []).filter((a) => a.network === deps.network), Boolean(deps.paymentDelegation))[0] ??
-          paymentRequired.accepts?.[0];
+          orderAccepts(
+            filterAllowedAssets(offered.filter((a) => a.network === deps.network), deps.allowedAssets),
+            Boolean(deps.paymentDelegation),
+          )[0] ?? offered[0];
         if (!accept) {
           state.refusal = "402 carried no payment requirements";
           return false;

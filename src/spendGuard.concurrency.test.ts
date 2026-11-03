@@ -90,7 +90,7 @@ describe("spendGuard — concurrent-cap race (issue #10)", () => {
   });
 
   it("no daily cap set → no-op reservation, ledger untouched (back-compat)", () => {
-    const r = reserveWalletSpend(999_999_999n);
+    const r = reserveWalletSpend(999_999n); // under the built-in per-call default
     expect(r.ok).toBe(true);
     expect(spentToday()).toBe(0n);
     if (r.ok) {

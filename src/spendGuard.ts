@@ -8,9 +8,11 @@
  *                `maxPerDayAtomic`  (this is the daily "ledger" that policy.ts
  *                declared as a follow-up — now implemented)
  *
- * Limits are read from `policy._defaults.limits` (wallet-wide). When unset the
- * guard is a no-op, so existing setups are unaffected — the caps only bite once
- * a user sets them (via `wallet_set_limit` / `hpp-x402 policy defaults`).
+ * Limits are read from `policy._defaults.limits` (wallet-wide). The per-call cap
+ * has a built-in default (DEFAULT_MAX_PER_CALL_ATOMIC, 1 USDC.e) so a fresh
+ * install is never uncapped; set `maxPerCallAtomic` (via `wallet_set_limit` /
+ * `hpp-x402 policy defaults --max-per-call`) to raise or lower it. The daily cap
+ * is opt-in: unset = no daily limit.
  *
  * This is a *soft* guard the bridge enforces before signing: it protects
  * against the agent overspending (misbehaviour / prompt injection), NOT against
@@ -127,12 +129,28 @@ function withLedgerLock<T>(fn: () => T): T {
   }
 }
 
-function walletLimits(): { maxPerCall?: bigint; maxPerDay?: bigint } {
+/**
+ * Per-call cap when the policy sets none: 1 USDC.e (6 decimals). Every listed
+ * HPP service prices well under it; a seller asking for more is refused until
+ * the user raises the cap on purpose. Wallet-wide — a per-host `limits` entry
+ * can only lower the effective cap, never lift this one.
+ */
+export const DEFAULT_MAX_PER_CALL_ATOMIC = 1_000_000n;
+
+function walletLimits(): { maxPerCall: bigint; perCallIsDefault: boolean; maxPerDay?: bigint } {
   const d = loadPolicy()._defaults?.limits ?? {};
   return {
-    maxPerCall: d.maxPerCallAtomic != null ? BigInt(d.maxPerCallAtomic) : undefined,
+    maxPerCall: d.maxPerCallAtomic != null ? BigInt(d.maxPerCallAtomic) : DEFAULT_MAX_PER_CALL_ATOMIC,
+    perCallIsDefault: d.maxPerCallAtomic == null,
     maxPerDay: d.maxPerDayAtomic != null ? BigInt(d.maxPerDayAtomic) : undefined,
   };
+}
+
+function perCallReason(amount: bigint, cap: bigint, isDefault: boolean): string {
+  return (
+    `wallet per-call cap exceeded: ${amount} > ${cap} atomic${isDefault ? " (built-in default, 1 USDC.e)" : ""}. ` +
+    "Raise it with wallet_set_limit (or hpp-x402 policy defaults --max-per-call)."
+  );
 }
 
 /** Wallet-wide atomic units spent so far today (UTC). */
@@ -142,12 +160,12 @@ export function spentToday(): bigint {
 
 /**
  * Returns a human-readable deny reason if paying `amount` would breach the
- * wallet-wide per-call or per-day cap, else null. No-op (null) when no caps set.
+ * wallet-wide per-call or per-day cap, else null.
  */
 export function checkWalletSpend(amount: bigint): string | null {
-  const { maxPerCall, maxPerDay } = walletLimits();
-  if (maxPerCall != null && amount > maxPerCall) {
-    return `wallet per-call cap exceeded: ${amount} > ${maxPerCall} atomic. Raise it with wallet_set_limit (or hpp-x402 policy defaults --max-per-call).`;
+  const { maxPerCall, perCallIsDefault, maxPerDay } = walletLimits();
+  if (amount > maxPerCall) {
+    return perCallReason(amount, maxPerCall, perCallIsDefault);
   }
   if (maxPerDay != null) {
     const after = spentToday() + amount;
@@ -195,20 +213,17 @@ export type SpendReservation = {
  *   reserve → sign → settle → commit()   (success)
  *                          ↘ release()   (failure / refusal)
  *
- * Backward compatible: with no daily cap set (or a non-positive amount) it
- * returns a no-op reservation and never touches the ledger, so per-call-only or
- * uncapped setups behave exactly as before.
+ * With no daily cap set (or a non-positive amount) it returns a no-op
+ * reservation and never touches the ledger, so per-call-only setups behave
+ * exactly as before. The per-call check always runs (built-in default).
  */
 export function reserveWalletSpend(
   amount: bigint,
 ): { ok: true; reservation: SpendReservation } | { ok: false; reason: string } {
-  const { maxPerCall, maxPerDay } = walletLimits();
+  const { maxPerCall, perCallIsDefault, maxPerDay } = walletLimits();
 
-  if (maxPerCall != null && amount > maxPerCall) {
-    return {
-      ok: false,
-      reason: `wallet per-call cap exceeded: ${amount} > ${maxPerCall} atomic. Raise it with wallet_set_limit (or hpp-x402 policy defaults --max-per-call).`,
-    };
+  if (amount > maxPerCall) {
+    return { ok: false, reason: perCallReason(amount, maxPerCall, perCallIsDefault) };
   }
 
   // Nothing to debit — keep callers uniform without touching the ledger/lock.
@@ -312,15 +327,18 @@ export function setWalletLimits(next: {
 /** Current limits + today's usage, for `wallet_get_limits` / `status`. */
 export function walletSpendStatus(): {
   spentTodayAtomic: string;
-  maxPerCallAtomic?: string;
+  maxPerCallAtomic: string;
+  /** true while the per-call cap is the built-in default (no explicit setting). */
+  maxPerCallIsDefault: boolean;
   maxPerDayAtomic?: string;
   remainingTodayAtomic?: string;
 } {
-  const { maxPerCall, maxPerDay } = walletLimits();
+  const { maxPerCall, perCallIsDefault, maxPerDay } = walletLimits();
   const spent = spentToday();
   return {
     spentTodayAtomic: spent.toString(),
-    maxPerCallAtomic: maxPerCall?.toString(),
+    maxPerCallAtomic: maxPerCall.toString(),
+    maxPerCallIsDefault: perCallIsDefault,
     maxPerDayAtomic: maxPerDay?.toString(),
     remainingTodayAtomic:
       maxPerDay != null ? (maxPerDay > spent ? (maxPerDay - spent).toString() : "0") : undefined,

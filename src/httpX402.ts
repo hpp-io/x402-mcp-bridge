@@ -12,7 +12,8 @@
  *   1. pre-flight guard: host allowlist + https              (policy.checkAccess)
  *   2. inject auth headers from local policy                  (policy.resolveCredentials)
  *   3. unpaid fetch; non-402 → passthrough (e.g. GET usage)
- *   4. parse 402 → pick the (exact, ourNetwork) accept        (a2a.pickExactAccept)
+ *   4. parse 402 → pick the (exact, ourNetwork) accept        (pickPayableAccept)
+ *      in an allowed asset                                    (assets.filterAllowedAssets)
  *   5. per-call amount cap                                    (policy.checkAmount)
  *   6. autoTopup the delegate from the Safe (reused)
  *   7. sign exact payload, encode Payment-Signature, re-send
@@ -22,6 +23,7 @@
  */
 import { x402Client, x402HTTPClient } from "@x402/core/client";
 import { makeExactClient, needsOwnFunds, orderAccepts, type PaymentDelegation } from "./erc7710.js";
+import { assetRefusal, filterAllowedAssets } from "./assets.js";
 import { UptoEvmScheme } from "@x402/evm/upto/client";
 import type { Network } from "@x402/core/types";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -44,6 +46,8 @@ import { log } from "./log.js";
 export interface HttpX402Deps {
   signer: RawEoaSigner;
   network: Network;
+  /** Lowercased token addresses we pay in; accepts in any other asset are dropped (config.allowedAssets). */
+  allowedAssets: readonly string[];
   /** Ensure the delegate holds enough USDC.e before paying. */
   funds?: Funds;
   /** ERC-7710 delegation: pay `erc7710` accepts from the user's account (no funds needed here). */
@@ -71,17 +75,21 @@ export interface HttpX402Deps {
 
 /**
  * Pick the accept to pay. Filters to schemes we can sign (exact always; upto
- * when an RPC is available) on the target network, then: an explicit buyer
- * preference wins, else the seller's advertised order (first eligible).
+ * when an RPC is available) on the target network, in an asset we pay in, then:
+ * an explicit buyer preference wins, else the seller's advertised order (first
+ * eligible).
  */
-function pickPayableAccept(
+export function pickPayableAccept(
   required: { accepts?: ReadonlyArray<Record<string, unknown>> },
   network: Network,
-  opts: { upto: boolean; prefer?: "exact" | "upto"; delegation?: boolean },
+  opts: { upto: boolean; prefer?: "exact" | "upto"; delegation?: boolean; allowedAssets: readonly string[] },
 ): Record<string, unknown> | null {
   const supported = new Set<string>(["exact", ...(opts.upto ? ["upto"] : [])]);
   const eligible = orderAccepts(
-    (required.accepts ?? []).filter((a) => a.network === network && supported.has(a.scheme as string)),
+    filterAllowedAssets(
+      (required.accepts ?? []).filter((a) => a.network === network && supported.has(a.scheme as string)),
+      opts.allowedAssets,
+    ),
     Boolean(opts.delegation),
   );
   if (eligible.length === 0) return null;
@@ -314,8 +322,13 @@ export async function x402HttpCall(
       upto: useUpto,
       prefer: deps.preferScheme,
       delegation: Boolean(deps.paymentDelegation),
+      allowedAssets: deps.allowedAssets,
     });
     if (!accept) {
+      // Name the asset when that is the only thing wrong — "no payable accept"
+      // would send the agent looking at schemes and networks instead.
+      const asset = assetRefusal(required.accepts ?? [], deps.network, deps.allowedAssets);
+      if (asset) return errorResult(`blocked: ${asset}`);
       const forced = deps.preferScheme ? `--scheme ${deps.preferScheme} ` : "";
       return errorResult(
         `no ${forced}payable accept (exact${useUpto ? "/upto" : ""}) for network ${deps.network} ` +
