@@ -39,6 +39,7 @@ import { installWindsurf } from "./install-windsurf.js";
 import { installClaudeCode, type ClaudeCodeInstallResult } from "./install-claude-code.js";
 import type { InstallEnv, InstallResult } from "./install-mcp-host.js";
 import { checkPaymentDelegation, loadPaymentDelegation } from "../erc7710.js";
+import { allowedAssetsFor } from "../config.js";
 
 const NETWORKS: Record<
   string,
@@ -449,6 +450,8 @@ program
         throw new Error("--scheme must be exact or upto");
       }
       const preferScheme = o.scheme as "exact" | "upto" | undefined;
+      // Same token allowlist as the bridge process (per-network defaults + env extras).
+      const allowedAssets = allowedAssetsFor(o.network, n.usdc, process.env.HPP_X402_ALLOWED_ASSETS);
 
       let body: unknown;
       if (o.body) {
@@ -469,6 +472,7 @@ program
             {
               signer,
               network: o.network as Network,
+              allowedAssets,
               funds,
               trustedSource: true,
               rpcUrl: n.rpc,
@@ -477,7 +481,7 @@ program
             { url: target, method: o.method, body },
           )
         : await hppCall(
-            { signer, network: o.network as Network, funds, rpcUrl: n.rpc, preferScheme },
+            { signer, network: o.network as Network, allowedAssets, funds, rpcUrl: n.rpc, preferScheme },
             new DiscoveryClient(o.url),
             { resourceId: target, body },
           );

@@ -99,7 +99,8 @@ describe("settleReservation — hold-on-ambiguous-timeout (issue #12, tier 1)", 
   });
 
   it("no cap set → reservation is a no-op, every outcome leaves ledger empty", () => {
-    const r = reserveWalletSpend(999_999_999n); // no daily cap → no-op reservation
+    // Under the built-in 1 USDC.e per-call default; no daily cap → no-op reservation.
+    const r = reserveWalletSpend(999_999n);
     expect(r.ok).toBe(true);
     if (r.ok) settleReservation(r.reservation, "ambiguous");
     expect(spentToday()).toBe(0n);

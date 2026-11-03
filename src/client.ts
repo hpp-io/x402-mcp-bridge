@@ -13,6 +13,8 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { wrapMCPClientWithPaymentFromConfig } from "@x402/mcp";
 import { makeExactClient, needsOwnFunds, orderAccepts, type PaymentDelegation } from "./erc7710.js";
+import { assetRefusal, filterAllowedAssets } from "./assets.js";
+import { reserveWalletSpend, settleReservation, type SettleOutcome, type SpendReservation } from "./spendGuard.js";
 import { UptoEvmScheme } from "@x402/evm/upto/client";
 import {
   BatchSettlementEvmScheme,
@@ -62,6 +64,14 @@ export interface UpstreamClient {
    * Updated by `paymentRequirementsSelector` on every 402 → sign.
    */
   lastPaymentAmount(): bigint | null;
+  /**
+   * Resolve the spend reservation taken for the last payment, if one is still
+   * open. The wrapper commits/releases on a settle response itself; the caller
+   * of `x402.callTool` reports the cases the wrapper never sees — a throw after
+   * the payment was sent (`ambiguous` → hold) or a result with no settle
+   * (`clean-failure` → release). No-op when nothing is pending.
+   */
+  settlePending(outcome: SettleOutcome): void;
   /** Disconnect and free resources. */
   close(): Promise<void>;
 }
@@ -69,6 +79,8 @@ export interface UpstreamClient {
 export interface UpstreamOptions {
   url: string;
   network: Network;
+  /** Lowercased token addresses we pay in; a 402 in any other asset is refused (config.allowedAssets). */
+  allowedAssets: readonly string[];
   /** EVM RPC URL — the upto client needs it to read the EIP-2612 token nonce
    *  for gasless Permit2 approval (without it, upto falls back to requiring a
    *  pre-existing on-chain approve(Permit2)). */
@@ -101,6 +113,17 @@ export async function connectUpstream(opts: UpstreamOptions): Promise<UpstreamCl
   // refund on a failed compute. The selector callback below assigns
   // it; the UpstreamClient surface reads it.
   let lastPaymentAmountAtomic: bigint | null = null;
+
+  // Wallet-wide spend guard, same as the one-shot paths (httpX402 / mcpCall /
+  // a2a): reserve before the SDK signs, resolve once the settle outcome is
+  // known. This path was the one payment route with no cap at all.
+  let pending: SpendReservation | null = null;
+  const settlePending = (outcome: SettleOutcome): void => {
+    if (!pending) return;
+    const r = pending;
+    pending = null;
+    settleReservation(r, outcome);
+  };
 
   const x402 = wrapMCPClientWithPaymentFromConfig(
     base,
@@ -141,7 +164,9 @@ export async function connectUpstream(opts: UpstreamOptions): Promise<UpstreamCl
         // override (forces exact, e.g. to show wallet balance deltas live).
         const supported = new Set(["exact", "batch-settlement", "upto"]);
         // erc7710 accepts: only payable with a delegation, and then preferred (this key may hold nothing).
-        const ordered = orderAccepts(accepts, Boolean(opts.paymentDelegation));
+        // Asset filter mirrors onPaymentRequested, which already refused when
+        // nothing offered is in an allowed asset.
+        const ordered = orderAccepts(filterAllowedAssets(accepts, opts.allowedAssets), Boolean(opts.paymentDelegation));
         let picked = ordered.find((a) => supported.has(a.scheme)) ?? ordered[0] ?? accepts[0];
         if (process.env.HPP_X402_PREFER_EXACT === "true") {
           picked = accepts.find((a) => a.scheme === "exact") ?? picked;
@@ -165,18 +190,38 @@ export async function connectUpstream(opts: UpstreamOptions): Promise<UpstreamCl
     {
       autoPayment: true,
       onPaymentRequested: async ({ paymentRequired }) => {
+        // A previous call's reservation still open means that call threw after
+        // paying and nobody reported it — hold it (ambiguous) rather than let a
+        // new reservation overwrite it.
+        settlePending("ambiguous");
+
+        const offered = paymentRequired.accepts ?? [];
+        const asset = assetRefusal(offered, opts.network, opts.allowedAssets);
+        if (asset) {
+          log.error("payment.refused", { reason: asset });
+          return false;
+        }
         // A multi-network resource-server advertises accepts for several networks;
         // pick THIS bridge's network so the topup amount + log match the accept the
         // selector will actually settle (the SDK filters accepts by registered
         // network). Falling back to accepts[0] keeps single-network servers working.
         const onNetwork = orderAccepts(
-          (paymentRequired.accepts ?? []).filter((a) => a.network === opts.network),
+          filterAllowedAssets(offered.filter((a) => a.network === opts.network), opts.allowedAssets),
           Boolean(opts.paymentDelegation),
         );
-        const accept = onNetwork[0] ?? paymentRequired.accepts?.[0];
+        const accept = onNetwork[0] ?? offered[0];
         if (!accept) return false;
 
         const requiredAtomic = BigInt((accept as { amount?: string }).amount ?? "0");
+
+        // Wallet-wide per-call + daily cap, reserved before the SDK signs.
+        const reserved = reserveWalletSpend(requiredAtomic);
+        if (!reserved.ok) {
+          log.error("payment.refused", { reason: reserved.reason, amount: requiredAtomic.toString() });
+          return false;
+        }
+        pending = reserved.reservation;
+
         if (!needsOwnFunds(accept)) {
           // Paid from the user's account via the delegation — nothing to top up on this key.
           log.info("payment.delegated", { amount: requiredAtomic.toString(), payTo: (accept as { payTo?: string }).payTo });
@@ -201,6 +246,7 @@ export async function connectUpstream(opts: UpstreamOptions): Promise<UpstreamCl
             err: (err as Error).message,
             requiredAtomic: requiredAtomic.toString(),
           });
+          settlePending("clean-failure"); // nothing was signed
           return false; // refuse payment — host will see the error
         }
       },
@@ -220,6 +266,9 @@ export async function connectUpstream(opts: UpstreamOptions): Promise<UpstreamCl
   // `invalid_batch_settlement_evm_cumulative_amount_mismatch`. Pending
   // upstream MCP wrapper fix: x402-foundation/x402#2387.
   x402.onAfterPayment(async ({ settleResponse }) => {
+    // A settle response is a definitive answer: success keeps the reserved
+    // spend, anything else returns it to today's budget.
+    settlePending(settleResponse?.success ? "success" : "clean-failure");
     if (!settleResponse || !settleResponse.success) return;
 
     // Auto-deposit visibility: when the SDK bundles an onchain deposit
@@ -275,6 +324,7 @@ export async function connectUpstream(opts: UpstreamOptions): Promise<UpstreamCl
     batchScheme,
     serverUrl: opts.url,
     lastPaymentAmount: () => lastPaymentAmountAtomic,
+    settlePending,
     async close() {
       await base.close().catch(() => {});
     },

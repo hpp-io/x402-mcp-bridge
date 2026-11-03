@@ -11,10 +11,39 @@ const HEX_KEY = /^0x[0-9a-fA-F]{64}$/;
 const KEYCHAIN_URI = /^keychain:\/\/[^\/]+\/[a-zA-Z0-9._-]+$/;
 
 // Per-network defaults so USDCE_ADDRESS / HPP_RPC_URL can be omitted (zero-config).
-const NETWORK_DEFAULTS: Record<string, { rpc: string; usdc: string }> = {
-  "eip155:181228": { rpc: "https://sepolia.hpp.io", usdc: "0x401eCb1D350407f13ba348573E5630B83638E30D" },
-  "eip155:190415": { rpc: "https://mainnet.hpp.io", usdc: "0x401eCb1D350407f13ba348573E5630B83638E30D" },
+// `assets` is the list of tokens the bridge will pay in on that network — a 402
+// asking for anything else is refused before signing (see assets.ts). USDC.e is
+// the settlement asset on both networks; Sepolia also carries HAC, the test
+// token dev-router prices in.
+const NETWORK_DEFAULTS: Record<string, { rpc: string; usdc: string; assets: readonly string[] }> = {
+  "eip155:181228": {
+    rpc: "https://sepolia.hpp.io",
+    usdc: "0x401eCb1D350407f13ba348573E5630B83638E30D",
+    assets: ["0x401eCb1D350407f13ba348573E5630B83638E30D", "0xb58A997c7CE77074e08715b73EaF709dafDEd349"],
+  },
+  "eip155:190415": {
+    rpc: "https://mainnet.hpp.io",
+    usdc: "0x401eCb1D350407f13ba348573E5630B83638E30D",
+    assets: ["0x401eCb1D350407f13ba348573E5630B83638E30D"],
+  },
 };
+
+const HEX_ADDR_LIST = /^\s*(0x[0-9a-fA-F]{40}\s*(,\s*0x[0-9a-fA-F]{40}\s*)*)?$/;
+
+/**
+ * Tokens the bridge pays in on `network`, lowercased and de-duplicated: the
+ * network's default list, the configured USDC.e address, and any operator
+ * extras (comma-separated, i.e. `HPP_X402_ALLOWED_ASSETS`). Shared by the
+ * bridge (loadConfig) and the `hpp-x402` CLI so both refuse the same 402s.
+ */
+export function allowedAssetsFor(network: string, usdc?: string, extraCsv?: string): string[] {
+  const defaults = NETWORK_DEFAULTS[network] ?? NETWORK_DEFAULTS["eip155:181228"];
+  const extras = (extraCsv ?? "")
+    .split(",")
+    .map((a) => a.trim())
+    .filter(Boolean);
+  return [...new Set([usdc ?? defaults.usdc, ...defaults.assets, ...extras].map((a) => a.toLowerCase()))];
+}
 
 const Schema = z.object({
   // Delegate EOA — signs EIP-3009 payments + executeAllowanceTransfer.
@@ -38,6 +67,14 @@ const Schema = z.object({
 
   // Asset paid in (USDC.e on HPP). Optional — defaults per network (below).
   USDCE_ADDRESS: z.string().regex(HEX_ADDR).optional(),
+
+  // Extra tokens the bridge may pay in, comma-separated addresses. Added to the
+  // per-network default list (NETWORK_DEFAULTS.assets) + USDCE_ADDRESS. A 402
+  // priced in any other token is refused before signing.
+  HPP_X402_ALLOWED_ASSETS: z
+    .string()
+    .regex(HEX_ADDR_LIST, "expected comma-separated 0x addresses")
+    .optional(),
 
   // Remote MCP server we proxy to (the seller). Optional: when unset the
   // bridge runs in local-tools-only mode (e.g. credit top-up / A2A) and skips
@@ -124,6 +161,8 @@ export type Config = Omit<z.infer<typeof Schema>, "USDCE_ADDRESS" | "HPP_RPC_URL
   /** Filled from NETWORK_DEFAULTS when omitted, so always present downstream. */
   USDCE_ADDRESS: string;
   HPP_RPC_URL: string;
+  /** Lowercased token addresses this bridge pays in on HPP_NETWORK (see assets.ts). */
+  allowedAssets: string[];
   chainId: number;
   /** "safe" when SAFE_ADDRESS + ALLOWANCE_MODULE_ADDRESS are set (autoTopup
    *  from the Safe); "light" when both are omitted (delegate holds USDC.e). */
@@ -154,10 +193,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     v.SAFE_ADDRESS && v.ALLOWANCE_MODULE_ADDRESS ? "safe" : "light";
   // Zero-config: fill USDC.e + RPC from per-network defaults when omitted.
   const defaults = NETWORK_DEFAULTS[v.HPP_NETWORK] ?? NETWORK_DEFAULTS["eip155:181228"];
+  const usdc = v.USDCE_ADDRESS ?? defaults.usdc;
   return {
     ...v,
-    USDCE_ADDRESS: v.USDCE_ADDRESS ?? defaults.usdc,
+    USDCE_ADDRESS: usdc,
     HPP_RPC_URL: v.HPP_RPC_URL ?? defaults.rpc,
+    allowedAssets: allowedAssetsFor(v.HPP_NETWORK, usdc, v.HPP_X402_ALLOWED_ASSETS),
     chainId,
     walletMode,
     discoveryEnabled: v.HPP_X402_DISCOVERY === "on",

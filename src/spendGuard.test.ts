@@ -6,9 +6,11 @@ import { join } from "node:path";
 import {
   checkWalletSpend,
   recordWalletSpend,
+  reserveWalletSpend,
   spentToday,
   walletSpendStatus,
   setWalletLimits,
+  DEFAULT_MAX_PER_CALL_ATOMIC,
 } from "./spendGuard.js";
 
 let home: string;
@@ -26,8 +28,27 @@ function setLimits(limits: Record<string, string>): void {
 }
 
 describe("spendGuard", () => {
-  it("is a no-op when no caps are configured (backward compatible)", () => {
-    expect(checkWalletSpend(999_999_999n)).toBeNull();
+  it("applies the built-in 1 USDC.e per-call cap when none is configured", () => {
+    expect(DEFAULT_MAX_PER_CALL_ATOMIC).toBe(1_000_000n);
+    expect(checkWalletSpend(1_000_000n)).toBeNull(); // at the default is allowed
+    expect(checkWalletSpend(1_000_001n)).toMatch(/per-call cap.*built-in default/);
+    expect(reserveWalletSpend(1_000_001n)).toMatchObject({ ok: false, reason: expect.stringMatching(/built-in default/) });
+    expect(walletSpendStatus()).toMatchObject({ maxPerCallAtomic: "1000000", maxPerCallIsDefault: true });
+  });
+
+  it("an explicit per-call cap replaces the default in both directions", () => {
+    setLimits({ maxPerCallAtomic: "5000000" });
+    expect(checkWalletSpend(4_000_000n)).toBeNull();
+    expect(walletSpendStatus()).toMatchObject({ maxPerCallAtomic: "5000000", maxPerCallIsDefault: false });
+    setLimits({ maxPerCallAtomic: "10" });
+    expect(checkWalletSpend(11n)).toMatch(/per-call cap exceeded: 11 > 10 atomic\./);
+  });
+
+  it("still has no daily cap unless one is configured", () => {
+    expect(checkWalletSpend(999_999n)).toBeNull();
+    recordWalletSpend(999_999n);
+    recordWalletSpend(999_999n);
+    expect(checkWalletSpend(999_999n)).toBeNull();
   });
 
   it("enforces the per-call cap (strict > only)", () => {

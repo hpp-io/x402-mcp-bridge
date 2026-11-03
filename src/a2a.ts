@@ -18,6 +18,7 @@
  */
 import { x402Client } from "@x402/core/client";
 import { makeExactClient, needsOwnFunds, orderAccepts, type PaymentDelegation } from "./erc7710.js";
+import { assetRefusal, filterAllowedAssets } from "./assets.js";
 import type { Network } from "@x402/core/types";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
@@ -29,6 +30,8 @@ import { log } from "./log.js";
 export interface A2aPayerDeps {
   signer: RawEoaSigner;
   network: Network;
+  /** Lowercased token addresses we pay in; accepts in any other asset are dropped (config.allowedAssets). */
+  allowedAssets: readonly string[];
   /** Optional: ensure the delegate holds enough USDC.e before paying. */
   funds?: Funds;
   /** ERC-7710 delegation: pay `erc7710` accepts from the user's account (no funds needed here). */
@@ -63,9 +66,12 @@ export interface A2aPayerDeps {
 export function pickExactAccept(
   required: { accepts?: ReadonlyArray<Record<string, unknown>> },
   network: Network,
-  opts: { delegation?: boolean } = {},
+  opts: { delegation?: boolean; allowedAssets: readonly string[] },
 ): Record<string, unknown> | null {
-  const accepts = (required.accepts ?? []).filter((a) => a.scheme === "exact" && a.network === network);
+  const accepts = filterAllowedAssets(
+    (required.accepts ?? []).filter((a) => a.scheme === "exact" && a.network === network),
+    opts.allowedAssets,
+  );
   // erc7710 accepts are payable only with a delegation, and then preferred (this key may hold nothing).
   return orderAccepts(accepts, Boolean(opts.delegation))[0] ?? null;
 }
@@ -206,8 +212,13 @@ export async function payA2aAgent(
   // would otherwise re-pick based on registered schemes and the topup
   // amount could end up funding a different `accepts[i].amount` than the
   // one actually signed. See pickExactAccept docstring.
-  const accept = pickExactAccept(required, deps.network, { delegation: Boolean(deps.paymentDelegation) });
+  const accept = pickExactAccept(required, deps.network, {
+    delegation: Boolean(deps.paymentDelegation),
+    allowedAssets: deps.allowedAssets,
+  });
   if (!accept) {
+    const asset = assetRefusal(required.accepts, deps.network, deps.allowedAssets);
+    if (asset) return errorResult(`blocked: ${asset}`);
     return errorResult(
       `A2A agent advertised no "exact" accept for network ${deps.network} ` +
         `(scheme/networks: ${JSON.stringify(

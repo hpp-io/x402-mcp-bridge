@@ -341,6 +341,7 @@ export async function hppCall(
       {
         signer: deps.signer,
         network: deps.network,
+        allowedAssets: deps.allowedAssets,
         funds: deps.funds,
         paymentDelegation: deps.paymentDelegation, // erc7710: pay from the user's account, not this key
         // Curated price is the ceiling: refuse if the agent's gate demands more
@@ -363,6 +364,7 @@ export async function hppCall(
       {
         signer: deps.signer,
         network: deps.network,
+        allowedAssets: deps.allowedAssets,
         funds: deps.funds,
         paymentDelegation: deps.paymentDelegation, // erc7710: pay from the user's account, not this key
         rpcUrl: deps.rpcUrl,

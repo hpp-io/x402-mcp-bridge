@@ -59,7 +59,8 @@ const WALLET_GET_LIMITS_TOOL = {
   name: "wallet_get_limits",
   description:
     "Show the wallet's spend limits (per-call + per-day in atomic USDC.e units) " +
-    "and how much has been spent today. Empty limits = uncapped.",
+    "and how much has been spent today. The per-call cap defaults to 1 USDC.e " +
+    "(maxPerCallIsDefault=true until set); no per-day cap unless one is set.",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
 } as const;
 
@@ -97,6 +98,8 @@ export interface BridgeServerOptions {
   /** Delegate signer + network — used by the local `pay_a2a_agent` tool. */
   signer: RawEoaSigner;
   network: Network;
+  /** Lowercased token addresses the bridge pays in (config.allowedAssets). */
+  allowedAssets: readonly string[];
   funds?: Funds;
   /** ERC-7710 delegation (pay from the user's account); undefined = pay with this key's USDC.e. */
   paymentDelegation?: PaymentDelegation;
@@ -240,6 +243,7 @@ export async function startBridgeServer(opts: BridgeServerOptions): Promise<void
           {
             signer: opts.signer, paymentDelegation: opts.paymentDelegation,
             network: opts.network,
+            allowedAssets: opts.allowedAssets,
             funds: opts.funds,
             rpcTimeoutMs: opts.a2aRpcTimeoutMs,
           },
@@ -261,6 +265,7 @@ export async function startBridgeServer(opts: BridgeServerOptions): Promise<void
           {
             signer: opts.signer, paymentDelegation: opts.paymentDelegation,
             network: opts.network,
+            allowedAssets: opts.allowedAssets,
             funds: opts.funds,
             rpcUrl: opts.rpcUrl,
           },
@@ -305,7 +310,7 @@ export async function startBridgeServer(opts: BridgeServerOptions): Promise<void
     if (opts.discovery && name === HPP_CALL_TOOL.name) {
       try {
         return await hppCall(
-          { signer: opts.signer, paymentDelegation: opts.paymentDelegation, network: opts.network, funds: opts.funds, rpcUrl: opts.rpcUrl },
+          { signer: opts.signer, paymentDelegation: opts.paymentDelegation, network: opts.network, allowedAssets: opts.allowedAssets, funds: opts.funds, rpcUrl: opts.rpcUrl },
           opts.discovery,
           (args ?? {}) as unknown as HppCallArgs,
         );
@@ -395,6 +400,9 @@ export async function startBridgeServer(opts: BridgeServerOptions): Promise<void
       const paymentMade =
         (result as { paymentMade?: boolean }).paymentMade ?? false;
       log.info("callTool.done", { name, paymentMade });
+      // The wrapper resolved the reservation on its settle response; anything
+      // still open here never reached a settle → give the budget back.
+      up.settlePending("clean-failure");
 
       // Strip bridge-internal fields (paymentMade, paymentResponse) before
       // returning to host — they're not part of the MCP CallToolResult shape.
@@ -405,6 +413,10 @@ export async function startBridgeServer(opts: BridgeServerOptions): Promise<void
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.error("callTool.failed", { name, err: msg });
+      // A refusal from onPaymentRequested surfaces as "Payment request denied":
+      // nothing was signed → release. Any other throw may have happened after
+      // the payment went out (timeout / transport) → hold the reservation.
+      up.settlePending(msg.includes("Payment request denied") ? "clean-failure" : "ambiguous");
       return {
         content: [{ type: "text" as const, text: `bridge error: ${msg}` }],
         isError: true,

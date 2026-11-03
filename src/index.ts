@@ -144,6 +144,7 @@ export async function runBridge(env: NodeJS.ProcessEnv = process.env): Promise<v
       upstream = await connectUpstream({
         url: cfg.RESOURCE_SERVER_URL,
         network: cfg.HPP_NETWORK as Network,
+        allowedAssets: cfg.allowedAssets,
         rpcUrl: cfg.HPP_RPC_URL,
         signer,
         funds,
@@ -199,6 +200,7 @@ export async function runBridge(env: NodeJS.ProcessEnv = process.env): Promise<v
     version: PKG_VERSION,
     signer,
     network: cfg.HPP_NETWORK as Network,
+    allowedAssets: cfg.allowedAssets,
     funds,
     paymentDelegation,
     rpcUrl: cfg.HPP_RPC_URL,

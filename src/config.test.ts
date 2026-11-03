@@ -33,6 +33,24 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ ...base, DELEGATE_PRIVATE_KEY: "nope" })).toThrow();
   });
 
+  it("allowedAssets = configured USDC.e + per-network defaults, lowercased and de-duplicated", () => {
+    const cfg = loadConfig(base);
+    expect(cfg.allowedAssets).toEqual([
+      "0x" + "a".repeat(40),
+      "0x401ecb1d350407f13ba348573e5630b83638e30d",
+      "0xb58a997c7ce77074e08715b73eaf709dafded349", // HAC — Sepolia test token (dev-router)
+    ]);
+    const main = loadConfig({ ...base, USDCE_ADDRESS: undefined, HPP_NETWORK: "eip155:190415" });
+    expect(main.allowedAssets).toEqual(["0x401ecb1d350407f13ba348573e5630b83638e30d"]); // mainnet: USDC.e only
+  });
+
+  it("HPP_X402_ALLOWED_ASSETS adds operator extras and rejects garbage", () => {
+    const cfg = loadConfig({ ...base, HPP_X402_ALLOWED_ASSETS: " 0x" + "C".repeat(40) + ", 0x" + "a".repeat(40) });
+    expect(cfg.allowedAssets).toContain("0x" + "c".repeat(40));
+    expect(cfg.allowedAssets.filter((x) => x === "0x" + "a".repeat(40))).toHaveLength(1);
+    expect(() => loadConfig({ ...base, HPP_X402_ALLOWED_ASSETS: "USDC" })).toThrow(/comma-separated/);
+  });
+
   it("HPP_X402_DISCOVERY=off disables discovery", () => {
     const cfg = loadConfig({ ...base, HPP_X402_DISCOVERY: "off" });
     expect(cfg.discoveryEnabled).toBe(false);
