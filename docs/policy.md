@@ -63,11 +63,16 @@ header (never exposed to the LLM or logs). If resolution fails, the call
 ## Asset allowlist (not in this file)
 
 Independently of the limits above, every payment path only pays in tokens on
-the bridge's **asset allowlist**: USDC.e on both networks, plus HAC
-(`0xb58A997c…`) on HPP Sepolia. A 402 priced in any other token is refused
+the bridge's **asset allowlist**: USDC.e and CHIP on both networks, plus HAC
+(`0xb58A997c…`) on HPP Sepolia. CHIP has a different address per network
+(Mainnet `0xEDFC8E66…`, Sepolia `0x0Ac610E7…`). A 402 priced in any other token is refused
 before signing with `blocked: seller wants payment in an asset this wallet
 does not pay in …`. To trust another token, set
 `HPP_X402_ALLOWED_ASSETS=0x…,0x…` (comma-separated) in the bridge's env.
+
+Spend caps are plain atomic-unit numbers and apply to every allowed token
+alike. USDC.e, CHIP and HAC all have 6 decimals, so a cap of `1000000` means
+1 USDC.e or 1 CHIP — the same number, not necessarily the same value.
 
 ## CLI — `hpp-x402-policy`
 

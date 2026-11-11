@@ -104,7 +104,7 @@ discovery never holds funds or sees your keys.
 |-----|-------|
 | `DELEGATE_PRIVATE_KEY` | auto-created in the OS keychain if unset |
 | `HPP_NETWORK` | `eip155:181228` Sepolia (default) / `eip155:190415` Mainnet |
-| `HPP_X402_ALLOWED_ASSETS` | extra tokens the bridge may pay in (comma-separated addresses). By default only USDC.e (both networks) and HAC (Sepolia test token); a 402 priced in any other token is refused before signing |
+| `HPP_X402_ALLOWED_ASSETS` | extra tokens the bridge may pay in (comma-separated addresses). By default USDC.e and CHIP (both networks) and HAC (Sepolia test token); a 402 priced in any other token is refused before signing |
 | `RESOURCE_SERVER_URL` | proxy one upstream MCP server (omit = local tools only) |
 | `SAFE_ADDRESS` + `ALLOWANCE_MODULE_ADDRESS` | set both = Safe (governance) mode |
 | `HPP_PAYMENT_DELEGATION` | ERC-7710 payment delegation a wallet granted to this key: pays `erc7710` accepts from the **user's smart account** under on-chain caps — this key needs no USDC.e. `hpp-x402 install <host> --delegation <value>` writes it. Checked against the key and the network at install and at boot (a value issued on the other network, revoked, or expired stops the bridge with the reason); without it such accepts are skipped |
