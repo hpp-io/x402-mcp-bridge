@@ -356,7 +356,7 @@ export async function x402HttpCall(
       // on-chain cap, or a light-mode balance check — same gate either way).
       if (deps.funds && needsOwnFunds(accept)) {
         try {
-          await deps.funds.ensure(amount);
+          await deps.funds.ensure(amount, (accept as { asset?: string }).asset);
         } catch (err) {
           return errorResult(`funds check failed (spend cap / insufficient balance?): ${(err as Error).message}`);
         }

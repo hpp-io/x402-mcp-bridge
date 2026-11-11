@@ -234,7 +234,7 @@ export async function connectUpstream(opts: UpstreamOptions): Promise<UpstreamCl
         });
 
         try {
-          const txHash = await opts.funds.ensure(requiredAtomic);
+          const txHash = await opts.funds.ensure(requiredAtomic, (accept as { asset?: string }).asset);
           if (txHash) {
             log.info("autoTopup.executed", { txHash, requiredAtomic: requiredAtomic.toString() });
           } else {

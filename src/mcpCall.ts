@@ -211,7 +211,7 @@ export async function payMcpTool(
 
         if (deps.funds && needsOwnFunds(accept)) {
           try {
-            await deps.funds.ensure(amount);
+            await deps.funds.ensure(amount, (accept as { asset?: string }).asset);
           } catch (err) {
             state.reservation.release();
             state.reservation = null;
