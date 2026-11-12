@@ -14,6 +14,7 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { wrapMCPClientWithPaymentFromConfig } from "@x402/mcp";
 import { makeExactClient, needsOwnFunds, orderAccepts, type PaymentDelegation } from "./erc7710.js";
 import { assetRefusal, filterAllowedAssets } from "./assets.js";
+import { capAmount } from "./valuation.js";
 import { reserveWalletSpend, settleReservation, type SettleOutcome, type SpendReservation } from "./spendGuard.js";
 import { UptoEvmScheme } from "@x402/evm/upto/client";
 import {
@@ -215,9 +216,10 @@ export async function connectUpstream(opts: UpstreamOptions): Promise<UpstreamCl
         const requiredAtomic = BigInt((accept as { amount?: string }).amount ?? "0");
 
         // Wallet-wide per-call + daily cap, reserved before the SDK signs.
-        const reserved = reserveWalletSpend(requiredAtomic);
+        const cap = await capAmount((accept as { asset?: unknown }).asset, requiredAtomic, opts.network);
+        const reserved = reserveWalletSpend(cap.units);
         if (!reserved.ok) {
-          log.error("payment.refused", { reason: reserved.reason, amount: requiredAtomic.toString() });
+          log.error("payment.refused", { reason: reserved.reason, amount: requiredAtomic.toString(), valued: cap.note });
           return false;
         }
         pending = reserved.reservation;
