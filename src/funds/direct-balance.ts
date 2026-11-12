@@ -55,23 +55,27 @@ export class DirectBalance implements Funds {
    * (sufficient balance) or throws with a funding instruction. It never returns
    * a tx hash.
    */
-  async balance(): Promise<bigint> {
+  async balance(asset?: string): Promise<bigint> {
     return (await this.publicClient.readContract({
-      address: this.token,
+      address: (asset as Address | undefined) ?? this.token,
       abi: ERC20_BALANCE_ABI,
       functionName: "balanceOf",
       args: [this.delegate],
     })) as bigint;
   }
 
-  async ensure(requiredAtomic: bigint): Promise<Hex | null> {
-    const balance = await this.balance();
+  async ensure(requiredAtomic: bigint, asset?: string): Promise<Hex | null> {
+    // Check the token the seller priced in, not always USDC.e: a wallet funded
+    // only with another allowlisted token (e.g. CHIP) must still be able to pay.
+    const balance = await this.balance(asset);
 
     if (balance >= requiredAtomic) return null;
 
+    const primary = !asset || asset.toLowerCase() === this.token.toLowerCase();
+    const what = primary ? "USDC.e" : `token ${asset}`;
     throw new Error(
-      `insufficient USDC.e: need ${requiredAtomic}, have ${balance}. ` +
-        `Send USDC.e to ${this.delegate} on this network to top up ` +
+      `insufficient ${primary ? "USDC.e" : `balance of ${what}`}: need ${requiredAtomic}, have ${balance}. ` +
+        `Send ${what} to ${this.delegate} on this network to top up ` +
         `(no native gas required).`,
     );
   }

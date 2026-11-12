@@ -84,9 +84,10 @@ const WALLET_SET_LIMIT_TOOL = {
 const WALLET_BALANCE_TOOL = {
   name: "wallet_balance",
   description:
-    "Show the wallet's current USDC.e balance — what it can spend right now. In " +
-    "Safe mode this is the delegate's immediately-spendable balance (the Safe " +
-    "tops up more on demand).",
+    "Show the wallet's current USDC.e balance — what it can spend right now — plus " +
+    "its balance of every other token it may pay in (`balances`, atomic units keyed " +
+    "by token address). In Safe mode this is the delegate's immediately-spendable " +
+    "balance (the Safe tops up USDC.e on demand).",
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
 } as const;
 
@@ -189,7 +190,20 @@ export async function startBridgeServer(opts: BridgeServerOptions): Promise<void
         return { content: [{ type: "text" as const, text: "no funds source configured" }], isError: true };
       }
       try {
-        const atomic = await opts.funds.balance();
+        const funds = opts.funds;
+        const atomic = await funds.balance();
+        // Every allowlisted token, so a wallet funded in another token (e.g. CHIP)
+        // does not read as empty. A token that fails to read is left out.
+        const balances: Record<string, string> = {};
+        await Promise.all(
+          opts.allowedAssets.map(async (a) => {
+            try {
+              balances[a] = (await funds.balance(a)).toString();
+            } catch {
+              /* unreadable token — omit */
+            }
+          }),
+        );
         const s = atomic.toString().padStart(7, "0");
         const usdce = `${s.slice(0, -6)}.${s.slice(-6)}`;
         return {
@@ -200,6 +214,7 @@ export async function startBridgeServer(opts: BridgeServerOptions): Promise<void
                 address: opts.signer.address,
                 balanceAtomic: atomic.toString(),
                 balanceUsdce: usdce,
+                balances,
                 network: opts.network,
               }),
             },

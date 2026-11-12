@@ -12,19 +12,30 @@ const KEYCHAIN_URI = /^keychain:\/\/[^\/]+\/[a-zA-Z0-9._-]+$/;
 
 // Per-network defaults so USDCE_ADDRESS / HPP_RPC_URL can be omitted (zero-config).
 // `assets` is the list of tokens the bridge will pay in on that network — a 402
-// asking for anything else is refused before signing (see assets.ts). USDC.e is
-// the settlement asset on both networks; Sepolia also carries HAC, the test
-// token dev-router prices in.
+// asking for anything else is refused before signing (see assets.ts). USDC.e
+// and CHIP are the settlement assets on both networks; Sepolia also carries
+// HAC, the test token dev-router prices in.
+//
+// CHIP (House Chip) is the HPP ecosystem credit token: 6 decimals, EIP-3009,
+// EIP-712 domain { name: "House Chip", version: "1" }. It lives at a DIFFERENT
+// address on each network, so each list names only its own.
 const NETWORK_DEFAULTS: Record<string, { rpc: string; usdc: string; assets: readonly string[] }> = {
   "eip155:181228": {
     rpc: "https://sepolia.hpp.io",
     usdc: "0x401eCb1D350407f13ba348573E5630B83638E30D",
-    assets: ["0x401eCb1D350407f13ba348573E5630B83638E30D", "0xb58A997c7CE77074e08715b73EaF709dafDEd349"],
+    assets: [
+      "0x401eCb1D350407f13ba348573E5630B83638E30D", // USDC.e
+      "0xb58A997c7CE77074e08715b73EaF709dafDEd349", // HAC (test token)
+      "0x0Ac610E77ec39AB5c6B402B376548Ac02ACc5a48", // CHIP
+    ],
   },
   "eip155:190415": {
     rpc: "https://mainnet.hpp.io",
     usdc: "0x401eCb1D350407f13ba348573E5630B83638E30D",
-    assets: ["0x401eCb1D350407f13ba348573E5630B83638E30D"],
+    assets: [
+      "0x401eCb1D350407f13ba348573E5630B83638E30D", // USDC.e
+      "0xEDFC8E6658561C97A3FFc966923d16C1c626083A", // CHIP
+    ],
   },
 };
 

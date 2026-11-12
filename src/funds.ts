@@ -17,18 +17,19 @@ import type { Hex } from "viem";
 export interface Funds {
   /**
    * Ensure the delegate holds at least `requiredAtomic` of the payment asset
-   * before the x402 payment is signed.
+   * before the x402 payment is signed. `asset` is the token the 402 asked for;
+   * omitted = the wallet's primary token (USDC.e).
    *
    * Returns the topup tx hash when an on-chain refill was performed (Safe mode),
    * or `null` when no action was needed (already sufficient). Throws a clear,
    * host-surfaceable error when funds are insufficient and cannot be topped up.
    */
-  ensure(requiredAtomic: bigint): Promise<Hex | null>;
+  ensure(requiredAtomic: bigint, asset?: string): Promise<Hex | null>;
 
   /**
    * The delegate's current balance of the payment asset (atomic units) — the
    * immediately-spendable balance. In Safe mode the Safe can top up more on
-   * demand (see {@link ensure}).
+   * demand (see {@link ensure}). `asset` omitted = the primary token (USDC.e).
    */
-  balance(): Promise<bigint>;
+  balance(asset?: string): Promise<bigint>;
 }

@@ -264,7 +264,7 @@ export async function payA2aAgent(
     //     light-mode balance check). Skipped when no funds source is wired.
     if (deps.funds && needsOwnFunds(accept)) {
       try {
-        await deps.funds.ensure(requiredAtomic);
+        await deps.funds.ensure(requiredAtomic, (accept as { asset?: string }).asset);
       } catch (err) {
         return errorResult(`funds check failed (spend cap / insufficient balance?): ${(err as Error).message}`);
       }

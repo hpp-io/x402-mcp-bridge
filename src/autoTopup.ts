@@ -115,7 +115,17 @@ export class AutoTopup implements Funds {
    * No-op when balance already sufficient. Returns the topup tx hash
    * (or null if no topup was needed).
    */
-  async ensure(requiredAtomic: bigint): Promise<Hex | null> {
+  async ensure(requiredAtomic: bigint, asset?: string): Promise<Hex | null> {
+    // The Safe allowance covers one token (USDC.e). A payment priced in another
+    // allowlisted token can only draw on what the delegate already holds.
+    if (asset && asset.toLowerCase() !== this.token.toLowerCase()) {
+      const held = await this.balanceOfDelegate(asset as Address);
+      if (held >= requiredAtomic) return null;
+      throw new Error(
+        `insufficient balance of token ${asset}: need ${requiredAtomic}, have ${held}. ` +
+          `Safe top-up covers USDC.e only — send the token to ${this.signer.address} directly.`,
+      );
+    }
     const balance = await this.balanceOfDelegate();
     if (balance >= requiredAtomic) return null;
 
@@ -141,14 +151,14 @@ export class AutoTopup implements Funds {
   }
 
   /** Funds interface: the delegate's immediately-spendable balance. */
-  async balance(): Promise<bigint> {
-    return this.balanceOfDelegate();
+  async balance(asset?: string): Promise<bigint> {
+    return this.balanceOfDelegate(asset as Address | undefined);
   }
 
   /** Read delegate's current ERC-20 balance. */
-  private async balanceOfDelegate(): Promise<bigint> {
+  private async balanceOfDelegate(token: Address = this.token): Promise<bigint> {
     return (await this.publicClient.readContract({
-      address: this.token,
+      address: token,
       abi: ERC20_BALANCE_ABI,
       functionName: "balanceOf",
       args: [this.signer.address],
