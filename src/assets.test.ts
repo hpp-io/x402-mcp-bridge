@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { assetRefusal, filterAllowedAssets, isAllowedAsset, normalizeAsset } from "./assets.js";
+import { assetRefusal, filterAllowedAssets, isAllowedAsset, normalizeAsset, schemeFitsAsset } from "./assets.js";
 
 const USDC = "0x401ecb1d350407f13ba348573e5630b83638e30d";
 const HAC = "0xb58a997c7ce77074e08715b73eaf709dafded349";
@@ -39,5 +39,20 @@ describe("assets allowlist", () => {
     expect(r).toContain(`offered: ${EVIL}`);
     expect(r).toContain(`allowed on ${NET}: ${USDC}`);
     expect(r).toContain("HPP_X402_ALLOWED_ASSETS");
+  });
+
+  it("an upto-only token (HPP) is payable through upto, never exact", () => {
+    const HPP = "0x8ebCaf48D2D91b8CEcF1668A4519823881Bf8fc3";
+    const allowed = [USDC, HPP.toLowerCase()];
+    const accepts = [
+      { asset: HPP, network: NET, scheme: "exact" },
+      { asset: HPP, network: NET, scheme: "upto" },
+      { asset: USDC, network: NET, scheme: "exact" },
+    ];
+    expect(filterAllowedAssets(accepts, allowed).map((a) => a.scheme + ":" + a.asset)).toEqual(["upto:" + HPP, "exact:" + USDC]);
+    expect(schemeFitsAsset({ asset: USDC, scheme: "exact" })).toBe(true);
+    // only a fixed-price HPP accept on our network → a refusal that names the real reason
+    expect(assetRefusal([{ asset: HPP, network: NET, scheme: "exact" }], NET, allowed)).toMatch(/only pay usage-based/);
+    expect(assetRefusal(accepts, NET, allowed)).toBeUndefined();
   });
 });

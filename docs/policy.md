@@ -63,16 +63,36 @@ header (never exposed to the LLM or logs). If resolution fails, the call
 ## Asset allowlist (not in this file)
 
 Independently of the limits above, every payment path only pays in tokens on
-the bridge's **asset allowlist**: USDC.e and CHIP on both networks, plus HAC
-(`0xb58A997c…`) on HPP Sepolia. CHIP has a different address per network
-(Mainnet `0xEDFC8E66…`, Sepolia `0x0Ac610E7…`). A 402 priced in any other token is refused
+the bridge's **asset allowlist**: USDC.e, CHIP and HPP on both networks, plus HAC
+(`0xb58A997c…`) on HPP Sepolia. CHIP and HPP have a different address per network
+(CHIP: Mainnet `0xEDFC8E66…`, Sepolia `0x0Ac610E7…`; HPP: Mainnet `0xB48334E7…`,
+Sepolia `0x8ebCaf48…`). A 402 priced in any other token is refused
 before signing with `blocked: seller wants payment in an asset this wallet
 does not pay in …`. To trust another token, set
 `HPP_X402_ALLOWED_ASSETS=0x…,0x…` (comma-separated) in the bridge's env.
 
-Spend caps are plain atomic-unit numbers and apply to every allowed token
-alike. USDC.e, CHIP and HAC all have 6 decimals, so a cap of `1000000` means
-1 USDC.e or 1 CHIP — the same number, not necessarily the same value.
+HPP has no EIP-3009, so it can only pay **usage-based (`upto`)** prices; a
+fixed-price 402 in HPP is refused with the reason.
+
+## What the cap numbers mean
+
+Every cap (`maxPerCallAtomic`, `maxPerDayAtomic`, per-host limits) is one number
+for all tokens: **micro-dollars** — `1000000` = 1 dollar.
+
+- **USDC.e, CHIP, HAC** (6 decimals) count 1:1: the amount in the 402 is the
+  number compared against the cap, exactly as before. A cap of `1000000` means
+  1 USDC.e or 1 CHIP — the same number, not necessarily the same value.
+- **HPP** (18 decimals, floating price) is converted to its dollar value first,
+  with the HPP/USD rate the HPP paymaster publishes
+  (`https://aa.hpp.io/wallet/rates`, Sepolia: `https://aa-sepolia.hpp.io/wallet/rates`;
+  override with `HPP_X402_RATES_URL`). The rate is cached for 10 minutes.
+  If it cannot be read, is older than 24 hours, or is far from the built-in
+  reference price, the reference price is used instead — and whenever there is
+  doubt the higher price is taken, which makes the cap stricter, not looser.
+  A refusal shows the conversion, e.g.
+  `(300 HPP ≈ $1.304685 at 0.004349 USD/HPP (published rate))`.
+
+The daily total adds these numbers across tokens.
 
 ## CLI — `hpp-x402-policy`
 

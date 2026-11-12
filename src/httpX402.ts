@@ -24,6 +24,7 @@
 import { x402Client, x402HTTPClient } from "@x402/core/client";
 import { makeExactClient, needsOwnFunds, orderAccepts, type PaymentDelegation } from "./erc7710.js";
 import { assetRefusal, filterAllowedAssets } from "./assets.js";
+import { capAmount } from "./valuation.js";
 import { UptoEvmScheme } from "@x402/evm/upto/client";
 import type { Network } from "@x402/core/types";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
@@ -338,15 +339,20 @@ export async function x402HttpCall(
     const narrowedRequired = { ...required, accepts: [accept] };
     const amount = BigInt((accept as { amount?: string }).amount ?? "0");
 
+    // What this payment counts as against the caps: the amount itself for
+    // dollar tokens, its USD value for a rate-valued token (valuation.ts).
+    const cap = await capAmount((accept as { asset?: unknown }).asset, amount, deps.network);
+    const valued = cap.note ? ` (${cap.note})` : "";
+
     // per-call amount cap — before pulling any funds
-    const deny = checkAmount(access.limits, amount);
-    if (deny) return errorResult(`blocked: ${deny}`);
+    const deny = checkAmount(access.limits, cap.units);
+    if (deny) return errorResult(`blocked: ${deny}${valued}`);
 
     // wallet-wide guard (per-call + daily ledger) — uniform across all payment
     // tools; reserves against the cap *before* signing so a concurrent payment
     // can't also pass while this one settles (issue #10).
-    const reserved = reserveWalletSpend(amount);
-    if (!reserved.ok) return errorResult(`blocked: ${reserved.reason}`);
+    const reserved = reserveWalletSpend(cap.units);
+    if (!reserved.ok) return errorResult(`blocked: ${reserved.reason}${valued}`);
     const reservation = reserved.reservation;
     // Default to clean-failure (release); only a sent-then-failed request flips
     // it to ambiguous (hold) or a confirmed response to success (issue #12, T1).

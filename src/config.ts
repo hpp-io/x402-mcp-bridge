@@ -16,6 +16,11 @@ const KEYCHAIN_URI = /^keychain:\/\/[^\/]+\/[a-zA-Z0-9._-]+$/;
 // and CHIP are the settlement assets on both networks; Sepolia also carries
 // HAC, the test token dev-router prices in.
 //
+// HPP is the network token (18 decimals, floating price). It has EIP-2612
+// permit but no EIP-3009, so it can only pay usage-based (`upto`, Permit2)
+// prices (assets.ts UPTO_ONLY_ASSETS), and its amounts are valued in USD for
+// the spend caps (valuation.ts). Its address also differs per network.
+//
 // CHIP (House Chip) is the HPP ecosystem credit token: 6 decimals, EIP-3009,
 // EIP-712 domain { name: "House Chip", version: "1" }. It lives at a DIFFERENT
 // address on each network, so each list names only its own.
@@ -27,6 +32,7 @@ const NETWORK_DEFAULTS: Record<string, { rpc: string; usdc: string; assets: read
       "0x401eCb1D350407f13ba348573E5630B83638E30D", // USDC.e
       "0xb58A997c7CE77074e08715b73EaF709dafDEd349", // HAC (test token)
       "0x0Ac610E77ec39AB5c6B402B376548Ac02ACc5a48", // CHIP
+      "0x8ebCaf48D2D91b8CEcF1668A4519823881Bf8fc3", // HPP (upto only)
     ],
   },
   "eip155:190415": {
@@ -35,6 +41,7 @@ const NETWORK_DEFAULTS: Record<string, { rpc: string; usdc: string; assets: read
     assets: [
       "0x401eCb1D350407f13ba348573E5630B83638E30D", // USDC.e
       "0xEDFC8E6658561C97A3FFc966923d16C1c626083A", // CHIP
+      "0xB48334E7938367bC24Fe1F19000D6f06C622E6c7", // HPP (upto only)
     ],
   },
 };

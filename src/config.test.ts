@@ -40,12 +40,14 @@ describe("loadConfig", () => {
       "0x401ecb1d350407f13ba348573e5630b83638e30d",
       "0xb58a997c7ce77074e08715b73eaf709dafded349", // HAC — Sepolia test token (dev-router)
       "0x0ac610e77ec39ab5c6b402b376548ac02acc5a48", // CHIP on Sepolia
+      "0x8ebcaf48d2d91b8cecf1668a4519823881bf8fc3", // HPP on Sepolia (upto only)
     ]);
     const main = loadConfig({ ...base, USDCE_ADDRESS: undefined, HPP_NETWORK: "eip155:190415" });
-    // mainnet: USDC.e and CHIP — CHIP at its mainnet address, never the Sepolia one
+    // mainnet: USDC.e, CHIP and HPP — CHIP at its mainnet address, never the Sepolia one
     expect(main.allowedAssets).toEqual([
       "0x401ecb1d350407f13ba348573e5630b83638e30d",
       "0xedfc8e6658561c97a3ffc966923d16c1c626083a",
+      "0xb48334e7938367bc24fe1f19000d6f06c622e6c7", // HPP on Mainnet (upto only)
     ]);
     expect(main.allowedAssets).not.toContain("0x0ac610e77ec39ab5c6b402b376548ac02acc5a48");
     expect(cfg.allowedAssets).not.toContain("0xedfc8e6658561c97a3ffc966923d16c1c626083a");

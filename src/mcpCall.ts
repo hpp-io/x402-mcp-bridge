@@ -28,6 +28,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { wrapMCPClientWithPaymentFromConfig } from "@x402/mcp";
 import { makeExactClient, needsOwnFunds, orderAccepts, type PaymentDelegation } from "./erc7710.js";
 import { assetRefusal, filterAllowedAssets } from "./assets.js";
+import { capAmount } from "./valuation.js";
 import { UptoEvmScheme } from "@x402/evm/upto/client";
 import type { Network } from "@x402/core/types";
 
@@ -194,17 +195,19 @@ export async function payMcpTool(
           }
         }
 
-        const capDeny = checkAmount(limits, amount);
+        const cap = await capAmount((accept as { asset?: unknown }).asset, amount, deps.network);
+        const valued = cap.note ? ` (${cap.note})` : "";
+        const capDeny = checkAmount(limits, cap.units);
         if (capDeny) {
-          state.refusal = `blocked: ${capDeny}`;
+          state.refusal = `blocked: ${capDeny}${valued}`;
           return false;
         }
         // Reserve against the wallet-wide cap *before* signing, so a second
         // concurrent payment can't also pass while this one settles (issue #10).
         // The reservation is committed on success / released on failure below.
-        const reserved = reserveWalletSpend(amount);
+        const reserved = reserveWalletSpend(cap.units);
         if (!reserved.ok) {
-          state.refusal = `blocked: ${reserved.reason}`;
+          state.refusal = `blocked: ${reserved.reason}${valued}`;
           return false;
         }
         state.reservation = reserved.reservation;

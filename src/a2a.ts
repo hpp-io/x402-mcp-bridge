@@ -19,6 +19,7 @@
 import { x402Client } from "@x402/core/client";
 import { makeExactClient, needsOwnFunds, orderAccepts, type PaymentDelegation } from "./erc7710.js";
 import { assetRefusal, filterAllowedAssets } from "./assets.js";
+import { capAmount } from "./valuation.js";
 import type { Network } from "@x402/core/types";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
@@ -253,8 +254,9 @@ export async function payA2aAgent(
   //     HTTP/MCP path, so A2A payments are capped too (previously uncapped).
   //     Reserve against the cap *before* signing so a concurrent payment can't
   //     also pass while this one settles (issue #10); commit / release below.
-  const reserved = reserveWalletSpend(requiredAtomic);
-  if (!reserved.ok) return errorResult(`blocked: ${reserved.reason}`);
+  const cap = await capAmount((accept as { asset?: unknown }).asset, requiredAtomic, deps.network);
+  const reserved = reserveWalletSpend(cap.units);
+  if (!reserved.ok) return errorResult(`blocked: ${reserved.reason}${cap.note ? ` (${cap.note})` : ""}`);
   const reservation = reserved.reservation;
   // Default clean-failure (release); a sent-then-failed RPC flips to ambiguous
   // (hold), a completed task to success (commit) — issue #12, tier 1.
